@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BACKPACK 机器人控制面板</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script> <style>
+        /* CSS 样式与上次相同，为简洁省略 */
+        :root { --dark-bg-main: #1a1a2e; --dark-bg-panel: #1f1f3a; --dark-border: #3a3a5a; --text-primary: #e0e0ff; --text-secondary: #a6a6ff; --accent-primary: #4e4eff; --accent-primary-hover: #6a6aff; --accent-green: #28a745; --accent-green-hover: #218838; --accent-red: #dc3545; --accent-red-hover: #c82333; --log-bg: #161625; --log-error: #ff8b8b; --log-warning: #ffc864; --log-info: #b9d7ff; --log-success: #8bff8b; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--dark-bg-main); color: var(--text-primary); margin: 0; padding: 20px; display: flex; flex-direction: column; gap: 20px; animation: fadeIn 0.5s ease-out; }
+        .main-layout { display: flex; gap: 20px; width: 100%; }
+        .container { background: var(--dark-bg-panel); border-radius: 12px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3); border: 1px solid var(--dark-border); }
+        #config-panel { width: 480px; padding: 25px; height: fit-content; }
+        .right-column { flex: 1; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+        #log-panel { padding: 25px; display: flex; flex-direction: column; }
+        #overall-stats-panel { padding: 25px; }
+        h1, h2, h3 { color: var(--text-secondary); border-bottom: 1px solid var(--dark-border); padding-bottom: 10px; }
+        h1 { margin-top: 0; font-size: 24px; } h2 { font-size: 20px; } h3 { font-size: 18px; margin-top: 25px; }
+        form { display: grid; grid-template-columns: 160px 1fr; gap: 16px; align-items: center; }
+        label { font-weight: 600; color: var(--text-secondary); font-size: 14px; text-align: right; padding-right: 10px; }
+        h3 { grid-column: 1 / -1; text-align: left; margin-bottom: 0; padding-left: 5px; }
+        input, select { width: 100%; padding: 10px; border: 1px solid var(--dark-border); border-radius: 6px; box-sizing: border-box; background: var(--dark-bg-main); color: var(--text-primary); font-size: 14px; }
+        input:focus, select:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 3px rgba(78, 78, 255, 0.3); }
+        #symbol_custom_wrapper { display: none; grid-column: 1 / -1; grid-template-columns: 160px 1fr; align-items: center; }
+        #symbol_custom_wrapper.visible { display: grid; animation: fadeIn 0.3s ease-out; }
+        .button-group { grid-column: 1 / -1; display: flex; gap: 10px; margin-top: 20px; }
+        button { flex: 1; padding: 12px; border: none; border-radius: 6px; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s ease; }
+        #btn-start { background: var(--accent-green); color: white; box-shadow: 0 4px 15px rgba(40, 167, 69, 0.3); }
+        #btn-start:hover { background: var(--accent-green-hover); transform: translateY(-2px); }
+        #status-bar { margin-top: 20px; }
+        #status-list { list-style-type: none; padding-left: 0; }
+        .status-item { background: var(--dark-bg-main); padding: 15px 20px; border-radius: 8px; margin-bottom: 15px; border-left: 5px solid var(--accent-green); transition: background 0.3s ease; position: relative; }
+        .status-item.error { border-left-color: var(--accent-red); }
+        .status-item:hover { background: #2a2a4a; }
+        .status-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .status-item-header strong { color: var(--text-secondary); font-size: 16px; }
+        .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 15px; margin-top: 12px; font-family: "SF Mono", "Courier New", Courier, monospace; font-size: 13px; line-height: 1.6; }
+        .kpi-item span { color: var(--text-secondary); font-weight: 500; display: block; }
+        .kpi-item strong { font-weight: 700; font-size: 14px; word-break: break-all; }
+        .pnl-positive { color: var(--log-success); }
+        .pnl-negative { color: var(--log-error); }
+        .chart-container { margin-top: 15px; height: 150px; position: relative; }
+        #btn-refresh, #btn-refresh-balance { font-size: 12px; padding: 6px 10px; background: var(--accent-primary); color: white; margin-left: 10px; border: none; border-radius: 4px; cursor: pointer; }
+        #btn-refresh:hover, #btn-refresh-balance:hover { background: var(--accent-primary-hover); }
+        .btn-stop-dynamic { background: var(--accent-red); color: white; border: none; padding: 6px 10px; font-size: 12px; border-radius: 4px; cursor: pointer; transition: all 0.2s ease; }
+        .btn-stop-dynamic:hover { background: var(--accent-red-hover); transform: translateY(-1px); }
+        #log-output { flex: 1; background: var(--log-bg); color: var(--text-primary); padding: 15px; border-radius: 8px; overflow-y: scroll; min-height: 300px; max-height: 450px; font-family: "SF Mono", "Courier New", Courier, monospace; font-size: 13px; white-space: pre-wrap; line-height: 1.6; border: 1px solid var(--dark-border); }
+        .log-line { padding-bottom: 2px; margin-bottom: 2px; border-bottom: 1px solid #2a2a3f; }
+        .log-line.ERROR { color: var(--log-error); font-weight: bold; } .log-line.WARNING { color: var(--log-warning); } .log-line.INFO { color: var(--log-info); } .log-line.SUCCESS { color: var(--log-success); font-weight: bold; }
+        #overall-stats-panel { margin-top: 0; }
+        .overall-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .overall-kpi-item { background: var(--dark-bg-main); padding: 15px; border-radius: 8px; text-align: center; border: 1px solid var(--dark-border); }
+        .overall-kpi-item span { display: block; color: var(--text-secondary); font-size: 14px; margin-bottom: 8px; }
+        .overall-kpi-item strong { font-size: 20px; font-weight: 700; word-break: break-all; }
+        #overall-chart-container { height: 250px; position: relative; margin-top: 10px; }
+        #overall-chart-placeholder { display: flex; align-items: center; justify-content: center; height: 250px; color: var(--text-secondary); font-style: italic; border: 1px dashed var(--dark-border); border-radius: 8px; }
+        #balance-panel { padding: 25px; margin-bottom: 20px; }
+        .balance-section { margin-top: 15px; }
+        .balance-section h3 { font-size: 16px; margin-bottom: 10px; border-bottom: none; }
+        #spot-balance-list, #futures-balance-list { list-style-type: none; padding-left: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 15px; }
+        #spot-balance-list li, #futures-balance-list li { font-size: 14px; font-family: "SF Mono", Courier, monospace; background: var(--dark-bg-main); padding: 8px 12px; border-radius: 4px; border-left: 3px solid var(--accent-primary); }
+        #spot-balance-list li strong, #futures-balance-list li strong { color: var(--text-secondary); min-width: 50px; display: inline-block; }
+        .balance-value { color: var(--text-primary); font-weight: 600;}
+        .balance-locked { color: #aaa; font-size: 12px; margin-left: 5px;}
+        .no-balance-msg { color: var(--text-secondary); font-style: italic; }
+
+    </style>
+</head>
+<body>
+    <div id="balance-panel" class="container">
+        <h2>账户余额 (<span id="balance-exchange-name">Backpack</span>)
+            <button id="btn-refresh-balance">刷新余额</button>
+        </h2>
+        <div class="balance-section">
+            <h3>现货/抵押品账户</h3>
+            <ul id="spot-balance-list"> <li class="no-balance-msg">加载中...</li> </ul>
+        </div>
+        <div class="balance-section">
+            <h3>合约账户</h3>
+            <ul id="futures-balance-list"> <li class="no-balance-msg">加载中...</li> </ul>
+        </div>
+    </div>
+
+    <div class="main-layout">
+        <div id="config-panel" class="container">
+            <h1>BACKPACK 控制面板</h1>
+            <h2>启动新机器人</h2>
+            <form id="bot-form">
+                <label for="exchange">交易所:</label>
+                <select id="exchange" name="exchange">
+                    <option value="backpack" selected>Backpack</option>
+                    <option value="aster">Aster</option>
+                </select>
+
+                <label for="market_type">市场类型:</label>
+                <select id="market_type" name="market_type">
+                    <option value="spot" selected>现货 (Spot)</option>
+                    <option value="perp">永续 (Perp)</option>
+                </select>
+
+                <label for="strategy">策略:</label>
+                <select id="strategy" name="strategy">
+                    <option value="standard" selected>标准做市</option>
+                    <option value="maker_hedge">对冲</option>
+                </select>
+
+                <label for="symbol_select">交易对:</label>
+                <select id="symbol_select" name="symbol_select">
+                    <option value="Other">Other (自定义)</option>
+                </select>
+                <div id="symbol_custom_wrapper">
+                    <label for="symbol_custom">自定义:</label>
+                    <input type="text" id="symbol_custom" name="symbol_custom" placeholder="例如: RENDER_USDC">
+                </div>
+
+                <h3>通用参数</h3>
+                <label for="spread">价差 (%):</label> <input type="number" id="spread" name="spread" value="0.1" step="0.01" required>
+                <label for="quantity">订单数量:</label> <input type="number" id="quantity" name="quantity" placeholder="例如 0.1 (留空则自动)" step="any">
+                <label for="target_volume">目标交易量:</label> <input type="number" id="target_volume" name="target_volume" placeholder="报价资产 (例如 10000)">
+
+                <h3>永续 (Perp) 参数</h3>
+                <label for="max_position">最大持仓:</label> <input type="number" id="max_position" name="max_position" value="5" step="0.1">
+                <label for="stop_loss">止损 (负数):</label> <input type="number" id="stop_loss" name="stop_loss" placeholder="例如 -25 (留空禁用)">
+                <label for="take_profit">止盈:</label> <input type="number" id="take_profit" name="take_profit" placeholder="例如 50 (留空禁用)">
+
+                <div class="button-group"> <button type="submit" id="btn-start">启动机器人</button> </div>
+            </form>
+            <hr style="margin: 25px 0; border-color: var(--dark-border);">
+            <h2>管理机器人</h2>
+            <div id="status-bar"> <h3>正在运行: (<span id="status-count">0</span>) <button id="btn-refresh">刷新状态</button> </h3> <ul id="status-list"> <li>没有正在运行的机器人</li> </ul> </div>
+        </div>
+
+        <div class="right-column">
+            <div id="log-panel" class="container"> <h2>实时日志</h2> <div id="log-output">连接到 WebSocket...</div> </div>
+            <div id="overall-stats-panel" class="container">
+                <h2>整体概览</h2>
+                <div class="overall-kpi-grid"> <div class="overall-kpi-item"><span>总 PnL</span><strong id="overall-pnl">N/A</strong></div> <div class="overall-kpi-item"><span>总交易笔数</span><strong id="overall-trades">N/A</strong></div> <div class="overall-kpi-item"><span>总交易量</span><strong id="overall-volume">N/A</strong></div> <div class="overall-kpi-item"><span>总 Fees</span><strong id="overall-fees">N/A</strong></div> </div>
+                <div id="overall-chart-container"> <div id="overall-chart-placeholder">启动机器人后显示 PnL 图表</div> <canvas id="overall-chart" style="display: none;"></canvas> </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- WebSocket 日志 (与之前相同) ---
+        const logOutput = document.getElementById('log-output'); function connectWebSocket() { logOutput.innerHTML = ""; const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:"; const wsUrl = `${wsProtocol}//${window.location.host}/ws/logs`; logOutput.innerHTML = `<div class="log-line">尝试连接到 ${wsUrl} ...</div>`; const ws = new WebSocket(wsUrl); ws.onopen = (event) => { logOutput.innerHTML += '<div class="log-line SUCCESS">WS 连接成功! 等待日志...</div>'; }; ws.onmessage = (event) => { if (logOutput.innerHTML.includes("等待日志...")) { logOutput.innerHTML = ""; } const message = event.data; const lineEl = document.createElement('div'); lineEl.textContent = message; if (message.includes("ERROR") || message.includes("失败")) { lineEl.className = "log-line ERROR"; } else if (message.includes("WARNING") || message.includes("警告")) { lineEl.className = "log-line WARNING"; } else if (message.includes("INFO")) { lineEl.className = "log-line INFO"; } else if (message.includes("成功") || message.includes("已启动") || message.includes("已停止")) { lineEl.className = "log-line SUCCESS"; } else { lineEl.className = "log-line"; } logOutput.appendChild(lineEl); logOutput.scrollTop = logOutput.scrollHeight; }; ws.onclose = (event) => { logOutput.innerHTML += '<div class="log-line ERROR">WS 连接断开! 5秒后尝试重连...</div>'; setTimeout(connectWebSocket, 5000); }; ws.onerror = (error) => { logOutput.innerHTML += '<div class="log-line ERROR">WS 发生错误!</div>'; }; }
+
+        // --- API 交互 ---
+        const botForm = document.getElementById('bot-form'); const statusList = document.getElementById('status-list'); const statusCount = document.getElementById('status-count'); const refreshBtn = document.getElementById('btn-refresh');
+        const marketTypeSelect = document.getElementById('market_type'); // (新) 获取市场类型选择框
+        const symbolSelect = document.getElementById('symbol_select'); const customSymbolWrapper = document.getElementById('symbol_custom_wrapper'); const customSymbolInput = document.getElementById('symbol_custom');
+        const overallPnlEl = document.getElementById('overall-pnl'); const overallTradesEl = document.getElementById('overall-trades'); const overallVolumeEl = document.getElementById('overall-volume'); const overallFeesEl = document.getElementById('overall-fees'); const overallChartCanvas = document.getElementById('overall-chart'); const overallChartPlaceholder = document.getElementById('overall-chart-placeholder');
+        const spotBalanceList = document.getElementById('spot-balance-list'); const futuresBalanceList = document.getElementById('futures-balance-list'); const balanceExchangeName = document.getElementById('balance-exchange-name'); const refreshBalanceBtn = document.getElementById('btn-refresh-balance'); const exchangeSelectForm = document.getElementById('exchange');
+
+        const botCharts = {}; const botPnlData = {}; let overallChartInstance = null; let overallPnlData = { labels: [], data: [] };
+
+        // (新) 定义交易对列表
+        const spotSymbols = [
+            "SOL_USDC", "BTC_USDC", "ETH_USDC", "SOL_USDT", "BTC_USDT", "ETH_USDT",
+            "WIF_USDC", "BONK_USDC", "RENDER_USDC", "PYTH_USDC", // 添加更多现货对
+            "JUP_USDC", "USDC_USDT" // 添加稳定币对
+            // 根据需要添加更多...
+        ];
+        const perpSymbols = [
+            "SOL_USDC_PERP", "BTC_USDC_PERP", "ETH_USDC_PERP", // 假设 Backpack 使用 _PERP 后缀
+            "WIF_USDC_PERP", "BONK_USDC_PERP", "PYTH_USDC_PERP",
+            "JUP_USDC_PERP",
+            "SOLUSDT" // Aster 的合约符号
+            // 根据需要添加更多...
+        ];
+        const otherOptionValue = "Other"; // 自定义选项的值
+
+        // (新) 更新交易对下拉框的函数
+        function updateSymbolOptions() {
+            const selectedMarketType = marketTypeSelect.value;
+            const symbols = selectedMarketType === 'perp' ? perpSymbols : spotSymbols;
+            const currentSelectedSymbol = symbolSelect.value; // 保留当前选择（如果可能）
+
+            symbolSelect.innerHTML = ""; // 清空现有选项
+
+            symbols.forEach(symbol => {
+                const option = document.createElement('option');
+                option.value = symbol;
+                option.textContent = symbol;
+                symbolSelect.appendChild(option);
+            });
+
+            // 添加 "Other" 选项
+            const otherOption = document.createElement('option');
+            otherOption.value = otherOptionValue;
+            otherOption.textContent = "Other (自定义)";
+            symbolSelect.appendChild(otherOption);
+
+            // 尝试恢复之前的选择或选择第一个
+            if (symbols.includes(currentSelectedSymbol)) {
+                 symbolSelect.value = currentSelectedSymbol;
+            } else if (symbolSelect.options.length > 1) {
+                 symbolSelect.value = symbols[0]; // 默认选第一个
+            } else {
+                 symbolSelect.value = otherOptionValue; // 如果列表为空，则选 Other
+            }
+
+            // 触发一次 change 事件以更新自定义输入框的可见性
+            symbolSelect.dispatchEvent(new Event('change'));
+        }
+
+        // (新) 监听市场类型变化
+        marketTypeSelect.addEventListener('change', updateSymbolOptions);
+
+        symbolSelect.addEventListener('change', (e) => {
+            customSymbolWrapper.classList.toggle('visible', e.target.value === otherOptionValue);
+            customSymbolInput.required = (e.target.value === otherOptionValue);
+        });
+
+        // 启动机器人
+        botForm.addEventListener('submit', async (e) => { e.preventDefault(); const formData = new FormData(botForm); const config = {}; formData.forEach((value, key) => { if (key === 'symbol_select' || key === 'symbol_custom') return; if (value === "") { config[key] = null; } else { const num = Number(value); config[key] = isNaN(num) ? value : num; } }); const selectedSymbolValue = symbolSelect.value; if (selectedSymbolValue === otherOptionValue) { config['symbol'] = customSymbolInput.value.trim().toUpperCase(); } else { config['symbol'] = selectedSymbolValue; } if (!config['symbol']) { alert("请选择或输入交易对"); return; } console.log("发送启动配置:", config); try { const response = await fetch('/api/start_bot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }); const result = await response.json(); if (!response.ok) { alert(`启动失败: ${result.error || '未知'}`); } else { alert(`成功: ${result.message}`); await updateStatus(); await updateBalance(); } } catch (err) { alert(`请求失败: ${err.message}`); } });
+
+        // 停止机器人
+        statusList.addEventListener('click', async (e) => { if (e.target.classList.contains('btn-stop-dynamic')) { const botId = e.target.dataset.botId; if (!confirm(`确定停止 ${botId} ?`)) { return; } try { const response = await fetch('/api/stop_bot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bot_id: botId }) }); const result = await response.json(); if (!response.ok) { alert(`停止失败: ${result.error || '未知'}`); } else { alert(`成功: ${result.message}`); await updateStatus(); await updateBalance(); } } catch (err) { alert(`请求失败: ${err.message}`); } } });
+
+        // 更新机器人状态
+        async function updateStatus() {
+            // ... (逻辑与上次相同，省略) ...
+             let runningBots = []; try { const response = await fetch('/api/status'); if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`); const data = await response.json(); runningBots = data.running_bots || []; statusCount.textContent = runningBots.length; if (runningBots.length === 0 && statusList.children.length !== 1) { statusList.innerHTML = "<li>没有正在运行的机器人</li>"; } else if (runningBots.length > 0 && statusList.children.length === 1 && statusList.children[0].textContent.includes("没有正在运行")) { statusList.innerHTML = ""; } const currentBotIds = Array.from(statusList.children).map(li => li.id.replace('status-', '')); const newBotIds = runningBots.map(bot => bot.bot_id); runningBots.forEach(bot => { if (!currentBotIds.includes(bot.bot_id)) { renderBotStatus(bot); } else { updateBotStatusDOM(bot); } }); currentBotIds.forEach(botId => { if (!newBotIds.includes(botId)) { const liToRemove = document.getElementById(`status-${botId}`); if (liToRemove) { liToRemove.remove(); } } }); updateOverallStats(runningBots); cleanupCharts(runningBots); } catch (err) { console.error("获取状态失败:", err); if (runningBots.length === 0) { statusList.innerHTML = `<li><strong style="color: var(--log-error);">获取状态失败: ${err.message}</strong></li>`; } updateOverallStats([]); }
+        }
+
+        // 渲染单个机器人状态
+        function renderBotStatus(bot) { // ... (逻辑与上次相同，省略) ...
+             const li = document.createElement('li'); li.id = `status-${bot.bot_id}`; li.className = `status-item ${bot.status.includes('失败') ? 'error' : ''}`; li.innerHTML = `<div class="status-item-header"> <strong class="bot-title">${bot.bot_id}</strong> <button class="btn-stop-dynamic" data-bot-id="${bot.bot_id}">停止</button> </div> <div class="kpi-grid"> <div class="kpi-item"><span>Session Net PnL:</span><strong class="kpi-session-pnl">N/A</strong></div> <div class="kpi-item"><span>Unrealized PnL:</span><strong class="kpi-unreal-pnl">N/A</strong></div> <div class="kpi-item"><span>Session Fees:</span><strong class="kpi-session-fees">N/A</strong></div> <div class="kpi-item"><span>Trades Executed:</span><strong class="kpi-trades">N/A</strong></div> <div class="kpi-item"><span>Total Bought:</span><strong class="kpi-bought">N/A</strong></div> <div class="kpi-item"><span>Total Sold:</span><strong class="kpi-sold">N/A</strong></div> </div> <div class="chart-container"><canvas id="chart-${bot.bot_id}"></canvas></div>`; statusList.appendChild(li); updateBotStatusDOM(bot);
+        }
+
+        // 更新机器人状态 DOM
+        function updateBotStatusDOM(bot) { // ... (逻辑与上次相同，省略) ...
+             const li = document.getElementById(`status-${bot.bot_id}`); if (!li) return; const sessionPnl = parseFloat(bot.session_net_pnl); const unrealPnl = parseFloat(bot.unrealized_pnl); const sessionPnlColor = sessionPnl > 0 ? 'pnl-positive' : (sessionPnl < 0 ? 'pnl-negative' : ''); const unrealPnlColor = unrealPnl > 0 ? 'pnl-positive' : (unrealPnl < 0 ? 'pnl-negative' : ''); const quoteAsset = bot.quote_asset || 'USD'; const baseAsset = bot.base_asset || 'BASE'; li.querySelector('.kpi-session-pnl').textContent = `${bot.session_net_pnl} ${quoteAsset}`; li.querySelector('.kpi-session-pnl').className = `kpi-session-pnl ${sessionPnlColor}`; li.querySelector('.kpi-unreal-pnl').textContent = `${bot.unrealized_pnl} ${quoteAsset}`; li.querySelector('.kpi-unreal-pnl').className = `kpi-unreal-pnl ${unrealPnlColor}`; li.querySelector('.kpi-session-fees').textContent = `${bot.session_fees} ${quoteAsset}`; li.querySelector('.kpi-trades').textContent = bot.trades_executed; li.querySelector('.kpi-bought').textContent = `${bot.total_bought} ${baseAsset}`; li.querySelector('.kpi-sold').textContent = `${bot.total_sold} ${baseAsset}`; updateChart(bot);
+        }
+
+        // 更新或创建图表
+        function updateChart(bot) { /* ... (逻辑与上次相同，省略) ... */ const botId = bot.bot_id; const canvasId = `chart-${botId}`; const ctx = document.getElementById(canvasId); if (!ctx) return; const now = new Date(); const currentPnl = parseFloat(bot.session_net_pnl); if (!botPnlData[botId]) botPnlData[botId] = { labels: [], data: [] }; botPnlData[botId].labels.push(now); botPnlData[botId].data.push(currentPnl); if (botPnlData[botId].labels.length > 100) { botPnlData[botId].labels.shift(); botPnlData[botId].data.shift(); } if (botCharts[botId]) { botCharts[botId].data.labels = botPnlData[botId].labels; botCharts[botId].data.datasets[0].data = botPnlData[botId].data; botCharts[botId].update('none'); } else { try { botCharts[botId] = new Chart(ctx, { type: 'line', data: { labels: botPnlData[botId].labels, datasets: [{ label: `PnL (${bot.quote_asset})`, data: botPnlData[botId].data, borderColor: (context)=>{ const chart=context.chart; const {ctx,chartArea}=chart; if(!chartArea) return 'rgb(78,78,255)'; const grad=ctx.createLinearGradient(0,chartArea.bottom,0,chartArea.top); if(botPnlData[botId].data.length>0 && botPnlData[botId].data[botPnlData[botId].data.length-1]>0){grad.addColorStop(0,'rgba(40,167,69,0.1)'); grad.addColorStop(1,'rgba(40,167,69,0.8)');} else {grad.addColorStop(0,'rgba(220,53,69,0.1)'); grad.addColorStop(1,'rgba(220,53,69,0.8)');} return grad;}, backgroundColor: 'rgba(78,78,255,0.1)', fill: true, tension: 0.1, pointRadius: 0, borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'minute', tooltipFormat: 'HH:mm:ss', displayFormats: { minute: 'HH:mm' } }, ticks: { color: 'var(--text-secondary)', maxTicksLimit: 6 }, grid: { color: 'var(--dark-border)' } }, y: { beginAtZero: false, ticks: { color: 'var(--text-secondary)', precision: 4 }, grid: { color: 'var(--dark-border)' } } }, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, backgroundColor: 'rgba(0,0,0,0.7)', titleColor: 'var(--text-secondary)', bodyColor: 'var(--text-primary)', } }, animation: false } }); } catch (e) { console.error(`Chart error ${botId}:`, e); delete botCharts[botId]; delete botPnlData[botId]; } } }
+
+        // 清理图表
+        function cleanupCharts(runningBotsList) { /* ... (逻辑与上次相同，省略) ... */ const runningBotIds = runningBotsList.map(bot => bot.bot_id); for (const botId in botCharts) { if (!runningBotIds.includes(botId)) { if (botCharts[botId]) { try { botCharts[botId].destroy(); } catch(e) {} delete botCharts[botId]; } if (botPnlData[botId]) delete botPnlData[botId]; console.log(`Cleaned up ${botId}`); } } if (runningBotsList.length === 0) { if (overallChartInstance) { overallChartInstance.destroy(); overallChartInstance = null; } overallPnlData = { labels: [], data: [] }; overallChartCanvas.style.display = 'none'; overallChartPlaceholder.style.display = 'flex'; } }
+
+        // 更新整体统计和图表
+        function updateOverallStats(runningBotsList) { /* ... (逻辑与上次相同，省略) ... */ let totalSessionNetPnl = 0, totalTrades = 0, totalVolumeBought = 0, totalVolumeSold = 0, totalSessionFees = 0, quoteAsset = 'USD', baseAsset = 'VARIOUS'; if (runningBotsList.length > 0) { quoteAsset = runningBotsList[0].quote_asset || 'USD'; baseAsset = runningBotsList.length === 1 ? runningBotsList[0].base_asset || 'BASE' : 'VARIOUS'; } runningBotsList.forEach(bot => { totalSessionNetPnl += parseFloat(bot.session_net_pnl || 0); totalTrades += parseInt(bot.trades_executed || 0); totalVolumeBought += parseFloat(bot.total_bought || 0); totalVolumeSold += parseFloat(bot.total_sold || 0); totalSessionFees += parseFloat(bot.session_fees || 0); }); overallPnlEl.textContent = `${totalSessionNetPnl.toFixed(4)} ${quoteAsset}`; overallPnlEl.className = totalSessionNetPnl > 0 ? 'pnl-positive' : (totalSessionNetPnl < 0 ? 'pnl-negative' : ''); overallTradesEl.textContent = totalTrades; overallVolumeEl.textContent = `${(totalVolumeBought + totalVolumeSold).toFixed(3)} (${baseAsset})`; overallFeesEl.textContent = `${totalSessionFees.toFixed(4)} ${quoteAsset}`; const now = new Date(); overallPnlData.labels.push(now); overallPnlData.data.push(totalSessionNetPnl); if (overallPnlData.labels.length > 100) { overallPnlData.labels.shift(); overallPnlData.data.shift(); } if (runningBotsList.length > 0 && overallPnlData.data.length > 0) { overallChartPlaceholder.style.display = 'none'; overallChartCanvas.style.display = 'block'; if (overallChartInstance) { overallChartInstance.data.labels = overallPnlData.labels; overallChartInstance.data.datasets[0].data = overallPnlData.data; overallChartInstance.update('none'); } else { const ctx = overallChartCanvas.getContext('2d'); overallChartInstance = new Chart(ctx, { type: 'line', data: { labels: overallPnlData.labels, datasets: [{ label: `总 PnL (${quoteAsset})`, data: overallPnlData.data, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.1)', fill: true, tension: 0.1, pointRadius: 0, borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'minute', tooltipFormat: 'HH:mm:ss', displayFormats: { minute: 'HH:mm' } }, ticks: { color: 'var(--text-secondary)', maxTicksLimit: 8 }, grid: { color: 'var(--dark-border)' } }, y: { beginAtZero: false, ticks: { color: 'var(--text-secondary)', precision: 4 }, grid: { color: 'var(--dark-border)' } } }, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, backgroundColor: 'rgba(0,0,0,0.7)', titleColor: 'var(--text-secondary)', bodyColor: 'var(--text-primary)', } }, animation: false } }); } } else { overallChartCanvas.style.display = 'none'; overallChartPlaceholder.style.display = 'flex'; if(overallChartInstance) { overallChartInstance.destroy(); overallChartInstance = null; } overallPnlData = { labels: [], data: [] }; } }
+
+        // 更新账户余额函数
+        async function updateBalance() { const selectedExchange = exchangeSelectForm.value; balanceExchangeName.textContent = selectedExchange.charAt(0).toUpperCase() + selectedExchange.slice(1); spotBalanceList.innerHTML = `<li class="no-balance-msg">正在加载现货余额...</li>`; futuresBalanceList.innerHTML = `<li class="no-balance-msg">正在加载合约余额...</li>`; try { const response = await fetch(`/api/balance?exchange=${selectedExchange}`); if (!response.ok) { const errorData = await response.json(); throw new Error(errorData.error || `HTTP ${response.status}`); } const data = await response.json(); const spotBalances = data.spot_balances || {}; const futuresBalances = data.futures_balances || {}; renderBalanceList(spotBalanceList, spotBalances, "未找到现货/抵押品余额"); renderBalanceList(futuresBalanceList, futuresBalances, "未找到合约余额 (或无仓位)"); } catch (err) { console.error("获取余额失败:", err); spotBalanceList.innerHTML = `<li><strong style="color: var(--log-error);">获取现货余额失败: ${err.message}</strong></li>`; futuresBalanceList.innerHTML = `<li><strong style="color: var(--log-error);">获取合约余额失败: ${err.message}</strong></li>`; } }
+        // 渲染余额列表
+        function renderBalanceList(listElement, balances, emptyMsg) { listElement.innerHTML = ""; const priorityAssets = ['USDT', 'USDC', 'SOL', 'BTC', 'ETH']; let displayedAssets = 0; const assetsToShow = {...balances}; priorityAssets.forEach(asset => { if (assetsToShow[asset]) { renderSingleBalanceItem(listElement, asset, assetsToShow[asset]); delete assetsToShow[asset]; displayedAssets++; } }); for (const asset in assetsToShow) { const balance = assetsToShow[asset]; if (balance.total && parseFloat(balance.total) > 0.000000001) { renderSingleBalanceItem(listElement, asset, balance); displayedAssets++; } } if (displayedAssets === 0) { listElement.innerHTML = `<li class="no-balance-msg">${emptyMsg}</li>`; } }
+        // 渲染单个余额项
+        function renderSingleBalanceItem(listElement, asset, balance) { const li = document.createElement('li'); let lockedHtml = ''; if (balance.locked && parseFloat(balance.locked) > 0.000000001) { lockedHtml = `<span class="balance-locked">(冻结: ${balance.locked})</span>`; } li.innerHTML = `<strong>${asset}:</strong> <span class="balance-value">${balance.available || 'N/A'}</span> ${lockedHtml}`; listElement.appendChild(li); }
+
+        refreshBtn.addEventListener('click', updateStatus);
+        refreshBalanceBtn.addEventListener('click', updateBalance);
+        exchangeSelectForm.addEventListener('change', updateBalance);
+
+        // --- 初始化 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            updateSymbolOptions(); // (新) 页面加载时根据默认市场类型填充交易对
+            connectWebSocket();
+            updateStatus();
+            updateBalance();
+            setInterval(updateStatus, 5000);
+        });
+
+    </script>
+</body>
+</html>

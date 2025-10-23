@@ -156,6 +156,7 @@ class MarketMaker:
             self.ws = None  # 不使用WebSocket
         # 執行緒池用於後台任務
         self.executor = ThreadPoolExecutor(max_workers=3)
+        self.is_running = True
 
         # Aster REST 成交流處理狀態
         self._fill_history_bootstrapped = False
@@ -2140,7 +2141,7 @@ class MarketMaker:
                 if f"account.orderUpdate.{self.symbol}" not in self.ws.subscriptions:
                     self.subscribe_order_updates()
             
-            while time.time() - start_time < duration_seconds:
+            while self.is_running and (time.time() - start_time < duration_seconds):
                 iteration += 1
                 current_time = time.time()
                 logger.info(f"\n=== 第 {iteration} 次迭代 ===")
@@ -2271,3 +2272,10 @@ class MarketMaker:
             if self.db:
                 self.db.close()
                 logger.info("數據庫連接已關閉")
+
+    def stop(self):
+        """
+        从外部线程安全地停止机器人
+        """
+        logger.info("收到外部停止信号，将在当前迭代完成后终止...")
+        self.is_running = False
