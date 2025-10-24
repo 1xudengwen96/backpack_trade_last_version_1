@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 *.db
+# PyInstaller files
+build/
+dist/
+*.spec
