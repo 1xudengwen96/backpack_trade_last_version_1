@@ -14,7 +14,7 @@ WS_PROXY = os.getenv('PROXY_WEBSOCKET')
 API_URL = "https://api.backpack.exchange"
 WS_URL = "wss://ws.backpack.exchange"
 API_VERSION = "v1"
-DEFAULT_WINDOW = "5000"
+DEFAULT_WINDOW = "30000"
 
 # 數據庫配置
 DB_PATH = 'orders.db'

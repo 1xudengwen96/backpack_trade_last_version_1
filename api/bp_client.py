@@ -34,11 +34,11 @@ class BPClient(BaseExchangeClient):
     async def disconnect(self) -> None:
         logger.info("Backpack 客户端已斷開連接")
 
-    def make_request(self, method: str, endpoint: str, api_key=None, secret_key=None, instruction=None, 
-                    params=None, data=None, retry_count=3) -> Dict:
+    def make_request(self, method: str, endpoint: str, api_key=None, secret_key=None,
+                    instruction=None, params=None, data=None, retry_count=3) -> Dict:
         """
         執行API請求，支持重試機制
-        
+
         Args:
             method: HTTP方法 (GET, POST, DELETE)
             endpoint: API端點
@@ -48,50 +48,60 @@ class BPClient(BaseExchangeClient):
             params: 查詢參數
             data: 請求體數據
             retry_count: 重試次數
-            
+
         Returns:
             API響應數據
         """
-        url = f"{API_URL}{endpoint}"
-        headers = {
-            'Content-Type': 'application/json',
-            'X-Broker-Id': '1500'
-        }
-        
-        # 構建簽名信息（如需要）
-        if api_key and secret_key and instruction:
-            timestamp = str(int(time.time() * 1000))
-            window = DEFAULT_WINDOW
-            
-            # 構建簽名消息
-            query_string = ""
-            if params:
-                sorted_params = sorted(params.items())
-                query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
-            
-            sign_message = f"instruction={instruction}"
-            if query_string:
-                sign_message += f"&{query_string}"
-            sign_message += f"&timestamp={timestamp}&window={window}"
-            
-            signature = create_signature(secret_key, sign_message)
-            if not signature:
-                return {"error": "簽名創建失敗"}
-            
-            headers.update({
-                'X-API-KEY': api_key,
-                'X-SIGNATURE': signature,
-                'X-TIMESTAMP': timestamp,
-                'X-WINDOW': window
-            })
-        
-        # 添加查詢參數到URL
-        if params and method.upper() in ['GET', 'DELETE']:
-            query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-            url += f"?{query_string}"
-        
+        url_base = f"{API_URL}{endpoint}" # URL基礎部分，不包含查詢參數
+
         # 實施重試機制
         for attempt in range(retry_count):
+            url = url_base
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Broker-Id': '1500'
+            }
+
+            # 構建簽名信息（如需要） <-- 已移入重試循環內，確保每次重試都有新的時間戳和簽名
+            if api_key and secret_key and instruction:
+                timestamp = str(int(time.time() * 1000))
+                window = DEFAULT_WINDOW
+
+                # 構建簽名消息
+                query_string = ""
+                if params:
+                    # 對於簽名，需要對參數排序
+                    sorted_params = sorted(params.items())
+                    query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
+
+                sign_message = f"instruction={instruction}"
+                if query_string:
+                    sign_message += f"&{query_string}"
+                sign_message += f"&timestamp={timestamp}&window={window}"
+
+                signature = create_signature(secret_key, sign_message)
+                if not signature:
+                    # 如果第一次簽名就失敗，強制退出
+                    if attempt == 0:
+                        return {"error": "簽名創建失敗"}
+                    # 否則，記錄警告並跳過本次重試
+                    logger.warning("簽名創建失敗，跳過本次重試")
+                    time.sleep(1)
+                    continue
+
+                headers.update({
+                    'X-API-KEY': api_key,
+                    'X-SIGNATURE': signature,
+                    'X-TIMESTAMP': timestamp,
+                    'X-WINDOW': window
+                })
+
+            # 添加查詢參數到URL
+            if params and method.upper() in ['GET', 'DELETE']:
+                # 這次只需要處理 URL 中的參數
+                query_string_url = "&".join([f"{k}={v}" for k, v in params.items()])
+                url += f"?{query_string_url}"
+
             try:
                 if method.upper() == 'GET':
                     response = requests.get(url, headers=headers, timeout=10)
