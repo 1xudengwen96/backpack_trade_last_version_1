@@ -34,8 +34,8 @@ class PerpetualMarketMaker(MarketMaker):
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         ws_proxy: Optional[str] = None,
-        exchange: str = 'backpack',
-        exchange_config: Optional[Dict[str, Any]] = None,
+        # exchange: str = 'backpack', # Removed
+        # exchange_config: Optional[Dict[str, Any]] = None, # Removed
         **kwargs,
     ) -> None:
         """
@@ -58,8 +58,8 @@ class PerpetualMarketMaker(MarketMaker):
             secret_key=secret_key,
             symbol=symbol,
             ws_proxy=ws_proxy,
-            exchange=exchange,
-            exchange_config=exchange_config,
+            # exchange=exchange, # Removed
+            # exchange_config=exchange_config, # Removed
             **kwargs,
         )
 
@@ -152,23 +152,23 @@ class PerpetualMarketMaker(MarketMaker):
                     logger.info(f"result: {result}")
                     logger.error("查詢倉位失敗: %s", error_msg)
                     return 0.0
-                
+
             if not isinstance(result, list):
                 logger.warning("倉位API返回格式異常: %s", type(result))
                 return 0.0
-                
+
             # 如果返回空列表，説明沒有該交易對的倉位
             if not result:
                 logger.debug("未找到 %s 的倉位記錄，倉位為0", self.symbol)
                 return 0.0
-            
+
             # 取第一個倉位（因為已經按symbol過濾了）
             position = result[0]
             net_quantity = float(position.get("netQuantity", 0))
-            
+
             logger.debug("從API獲取 %s 永續倉位: %s", self.symbol, net_quantity)
             return net_quantity
-            
+
         except Exception as e:
             logger.error("查詢永續倉位時發生錯誤: %s", e)
             # 發生錯誤時，fallback到本地計算（雖然可能不準確）
@@ -180,13 +180,13 @@ class PerpetualMarketMaker(MarketMaker):
         try:
             # 嘗試查詢特定symbol的倉位
             result = self.client.get_positions(self.symbol)
-            
+
             # 如果特定symbol查詢失敗，嘗試查詢所有倉位
             if isinstance(result, dict) and "error" in result:
-                logger.warning(f"特定symbol查詢失敗: {result['error']}")
+                logger.warning(f"特定symbol查詢失败: {result['error']}")
                 logger.info("嘗試查詢所有倉位...")
                 result = self.client.get_positions()
-                
+
                 # 從所有倉位中篩選當前symbol
                 if isinstance(result, list):
                     for pos in result:
@@ -195,17 +195,17 @@ class PerpetualMarketMaker(MarketMaker):
                             return pos
                     logger.warning(f"在所有倉位中未找到 {self.symbol}")
                     return {}
-            
+
             if not isinstance(result, list) or not result:
                 logger.info("API返回空倉位列表")
                 return {}
-            
-            position_data = result[0]
-            
 
-            
+            position_data = result[0]
+
+
+
             return position_data
-            
+
         except Exception as e:
             logger.error(f"獲取倉位信息時發生錯誤: {e}")
             return {}
@@ -236,7 +236,7 @@ class PerpetualMarketMaker(MarketMaker):
 
     def _update_position_state(self) -> None:
         """更新倉位相關統計。"""
-        net = self.get_net_position()  # 現在這會從API獲取實際倉位
+        net = self.get_net_position()  # 現在這会從API獲取實際倉位
         current_price = self.get_current_price()
         direction = "FLAT"
         avg_entry = 0.0

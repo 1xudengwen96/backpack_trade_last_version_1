@@ -7,7 +7,7 @@ from typing import Optional
 from datetime import datetime
 
 from api.bp_client import BPClient
-from api.aster_client import AsterClient
+# from api.aster_client import AsterClient # Removed
 from ws_client.client import BackpackWebSocket
 from strategies.market_maker import MarketMaker
 from strategies.perp_market_maker import PerpetualMarketMaker
@@ -23,28 +23,18 @@ logger = setup_logger("cli")
 _client_cache = {}
 USE_DATABASE = ENABLE_DATABASE
 
-def _resolve_api_credentials(exchange: str, api_key: Optional[str], secret_key: Optional[str]):
-    """根據交易所解析並返回對應的 API/Secret Key。"""
-    exchange = (exchange or "backpack").lower()
 
-    if exchange == "aster":
-        api_candidates = [
-            os.getenv("ASTER_API_KEY"),
-            os.getenv("ASTER_KEY"),
-        ]
-        secret_candidates = [
-            os.getenv("ASTER_SECRET_KEY"),
-            os.getenv("ASTER_SECRET"),
-        ]
-    else:
-        api_candidates = [
-            os.getenv("BACKPACK_KEY"),
-            os.getenv("API_KEY"),
-        ]
-        secret_candidates = [
-            os.getenv("BACKPACK_SECRET"),
-            os.getenv("SECRET_KEY"),
-        ]
+def _resolve_api_credentials(api_key: Optional[str], secret_key: Optional[str]):
+    """根據交易所解析並返回對應的 API/Secret Key。 (Simplified for Backpack only)"""
+
+    api_candidates = [
+        os.getenv("BACKPACK_KEY"),
+        os.getenv("API_KEY"),
+    ]
+    secret_candidates = [
+        os.getenv("BACKPACK_SECRET"),
+        os.getenv("SECRET_KEY"),
+    ]
 
     resolved_api_key = next((value for value in api_candidates if value), None) or api_key
     resolved_secret_key = next((value for value in secret_candidates if value), None) or secret_key
@@ -52,11 +42,9 @@ def _resolve_api_credentials(exchange: str, api_key: Optional[str], secret_key: 
     return resolved_api_key, resolved_secret_key
 
 
-def _get_client(api_key=None, secret_key=None, exchange='backpack', exchange_config=None):
-    """獲取緩存的客户端實例，避免重複創建"""
-    exchange = (exchange or 'backpack').lower()
-    if exchange not in ('backpack', 'aster'):
-        raise ValueError(f"不支持的交易所: {exchange}")
+def _get_client(api_key=None, secret_key=None, exchange_config=None):
+    """獲取緩存的客户端實例，避免重複創建 (Simplified for Backpack only)"""
+    exchange = 'backpack'
 
     config = dict(exchange_config or {})
     config_api_key = api_key or config.get('api_key')
@@ -80,7 +68,7 @@ def _get_client(api_key=None, secret_key=None, exchange='backpack', exchange_con
     cache_key = f"{exchange}:{cache_suffix}"
 
     if cache_key not in _client_cache:
-        client_cls = BPClient if exchange == 'backpack' else AsterClient
+        client_cls = BPClient
         _client_cache[cache_key] = client_cls(config)
 
     return _client_cache[cache_key]
@@ -91,6 +79,7 @@ def get_address_command(api_key, secret_key):
     blockchain = input("請輸入區塊鏈名稱(Solana, Ethereum, Bitcoin等): ")
     result = _get_client(api_key, secret_key).get_deposit_address(blockchain)
     print(result)
+
 
 def get_balance_command(api_key, secret_key):
     """獲取餘額命令"""
@@ -122,15 +111,16 @@ def get_balance_command(api_key, secret_key):
                 collateral_value = item.get('collateralValue', '')
                 print(f"{symbol}: 總量 {total}, 可用 {available}, 出借中 {lend}, 抵押價值 {collateral_value}")
 
+
 def get_markets_command():
     """獲取市場信息命令"""
     print("\n獲取市場信息...")
     markets_info = _get_client().get_markets()
-    
+
     if isinstance(markets_info, dict) and "error" in markets_info:
         print(f"獲取市場信息失敗: {markets_info['error']}")
         return
-    
+
     spot_markets = [m for m in markets_info if m.get('marketType') == 'SPOT']
     print(f"\n找到 {len(spot_markets)} 個現貨市場:")
     for i, market in enumerate(spot_markets):
@@ -138,7 +128,8 @@ def get_markets_command():
         base = market.get('baseSymbol')
         quote = market.get('quoteSymbol')
         market_type = market.get('marketType')
-        print(f"{i+1}. {symbol} ({base}/{quote}) - {market_type}")
+        print(f"{i + 1}. {symbol} ({base}/{quote}) - {market_type}")
+
 
 def get_orderbook_command(api_key, secret_key, ws_proxy=None):
     """獲取市場深度命令"""
@@ -147,14 +138,14 @@ def get_orderbook_command(api_key, secret_key, ws_proxy=None):
         print("連接WebSocket獲取實時訂單簿...")
         ws = BackpackWebSocket(api_key, secret_key, symbol, auto_reconnect=True, proxy=ws_proxy)
         ws.connect()
-        
+
         # 等待連接建立
         wait_time = 0
         max_wait_time = 5
         while not ws.connected and wait_time < max_wait_time:
             time.sleep(0.5)
             wait_time += 0.5
-        
+
         if not ws.connected:
             print("WebSocket連接超時，使用REST API獲取訂單簿")
             depth = _get_client().get_order_book(symbol)
@@ -162,28 +153,28 @@ def get_orderbook_command(api_key, secret_key, ws_proxy=None):
             # 初始化訂單簿並訂閲深度流
             ws.initialize_orderbook()
             ws.subscribe_depth()
-            
+
             # 等待數據更新
             time.sleep(2)
             depth = ws.get_orderbook()
-        
+
         print("\n訂單簿:")
         print("\n賣單 (從低到高):")
         if 'asks' in depth and depth['asks']:
             asks = sorted(depth['asks'], key=lambda x: x[0])[:10]  # 多展示幾個深度
             for i, (price, quantity) in enumerate(asks):
-                print(f"{i+1}. 價格: {price}, 數量: {quantity}")
+                print(f"{i + 1}. 價格: {price}, 數量: {quantity}")
         else:
             print("無賣單數據")
-        
+
         print("\n買單 (從高到低):")
         if 'bids' in depth and depth['bids']:
             bids = sorted(depth['bids'], key=lambda x: x[0], reverse=True)[:10]  # 多展示幾個深度
             for i, (price, quantity) in enumerate(bids):
-                print(f"{i+1}. 價格: {price}, 數量: {quantity}")
+                print(f"{i + 1}. 價格: {price}, 數量: {quantity}")
         else:
             print("無買單數據")
-        
+
         # 分析市場情緒
         if ws.connected:
             liquidity_profile = ws.get_liquidity_profile()
@@ -191,19 +182,19 @@ def get_orderbook_command(api_key, secret_key, ws_proxy=None):
                 buy_volume = liquidity_profile['bid_volume']
                 sell_volume = liquidity_profile['ask_volume']
                 imbalance = liquidity_profile['imbalance']
-                
+
                 print("\n市場流動性分析:")
                 print(f"買單量: {buy_volume:.4f}")
                 print(f"賣單量: {sell_volume:.4f}")
-                print(f"買賣比例: {(buy_volume/sell_volume):.2f}") if sell_volume > 0 else print("買賣比例: 無限")
-                
+                print(f"買賣比例: {(buy_volume / sell_volume):.2f}") if sell_volume > 0 else print("買賣比例: 無限")
+
                 # 判斷市場情緒
                 sentiment = "買方壓力較大" if imbalance > 0.2 else "賣方壓力較大" if imbalance < -0.2 else "買賣壓力平衡"
                 print(f"市場情緒: {sentiment} ({imbalance:.2f})")
-        
+
         # 關閉WebSocket連接
         ws.close()
-        
+
     except Exception as e:
         print(f"獲取訂單簿失敗: {str(e)}")
         # 嘗試使用REST API
@@ -212,7 +203,7 @@ def get_orderbook_command(api_key, secret_key, ws_proxy=None):
             if isinstance(depth, dict) and "error" in depth:
                 print(f"獲取訂單簿失敗: {depth['error']}")
                 return
-            
+
             print("\n訂單簿 (REST API):")
             print("\n賣單 (從低到高):")
             if 'asks' in depth and depth['asks']:
@@ -220,26 +211,27 @@ def get_orderbook_command(api_key, secret_key, ws_proxy=None):
                     [float(price), float(quantity)] for price, quantity in depth['asks']
                 ], key=lambda x: x[0])[:10]
                 for i, (price, quantity) in enumerate(asks):
-                    print(f"{i+1}. 價格: {price}, 數量: {quantity}")
+                    print(f"{i + 1}. 價格: {price}, 數量: {quantity}")
             else:
                 print("無賣單數據")
-            
+
             print("\n買單 (從高到低):")
             if 'bids' in depth and depth['bids']:
                 bids = sorted([
                     [float(price), float(quantity)] for price, quantity in depth['bids']
                 ], key=lambda x: x[0], reverse=True)[:10]
                 for i, (price, quantity) in enumerate(bids):
-                    print(f"{i+1}. 價格: {price}, 數量: {quantity}")
+                    print(f"{i + 1}. 價格: {price}, 數量: {quantity}")
             else:
                 print("無買單數據")
         except Exception as e:
             print(f"使用REST API獲取訂單簿也失敗: {str(e)}")
 
+
 def configure_rebalance_settings():
     """配置重平設置"""
     print("\n=== 重平設置配置 ===")
-    
+
     # 是否開啟重平功能
     while True:
         enable_input = input("是否開啟重平功能? (y/n，默認: y): ").strip().lower()
@@ -251,10 +243,10 @@ def configure_rebalance_settings():
             break
         else:
             print("請輸入 y 或 n")
-    
+
     base_asset_target_percentage = 30.0  # 默認值
     rebalance_threshold = 15.0  # 默認值
-    
+
     if enable_rebalance:
         # 設置基礎資產目標比例
         while True:
@@ -272,7 +264,7 @@ def configure_rebalance_settings():
                         print("比例必須在 0-100 之間")
             except ValueError:
                 print("請輸入有效的數字")
-        
+
         # 設置重平觸發閾值
         while True:
             try:
@@ -289,9 +281,9 @@ def configure_rebalance_settings():
                         print("閾值必須大於 0")
             except ValueError:
                 print("請輸入有效的數字")
-        
+
         quote_asset_target_percentage = 100.0 - base_asset_target_percentage
-        
+
         print(f"\n重平設置:")
         print(f"重平功能: 開啟")
         print(f"目標比例: {base_asset_target_percentage}% 基礎資產 / {quote_asset_target_percentage}% 報價資產")
@@ -299,39 +291,31 @@ def configure_rebalance_settings():
     else:
         print(f"\n重平設置:")
         print(f"重平功能: 關閉")
-    
+
     return enable_rebalance, base_asset_target_percentage, rebalance_threshold
+
 
 def run_market_maker_command(api_key, secret_key, ws_proxy=None):
     """執行做市策略命令"""
-    # [整合功能] 1. 增加交易所選擇
-    exchange_input = input("請選擇交易所 (backpack/aster，默認 backpack): ").strip().lower()
-    exchange = exchange_input if exchange_input in ('backpack', 'aster') else 'backpack'
+    # [整合功能] 1. 增加交易所選擇 (Removed)
+    # exchange_input = input("請選擇交易所 (backpack/aster，默認 backpack): ").strip().lower()
+    exchange = 'backpack'  # Hardcoded
     print(f"已選擇交易所: {exchange}")
 
     # [整合功能] 2. 根據選擇配置交易所信息
-    api_key, secret_key = _resolve_api_credentials(exchange, api_key, secret_key)
+    api_key, secret_key = _resolve_api_credentials(api_key, secret_key)
 
     if not api_key or not secret_key:
-        print("錯誤：未找到對應交易所的 API Key 或 Secret Key，請先設置環境變數或配置檔案。")
+        print("錯誤：未找到 Backpack API Key 或 Secret Key，請先設置環境變數或配置檔案。")
         return
 
-    if exchange == 'backpack':
-        exchange_config = {
-            'api_key': api_key,
-            'secret_key': secret_key,
-            'base_url': os.getenv('BASE_URL', 'https://api.backpack.work'),
-            'api_version': 'v1',
-            'default_window': '5000'
-        }
-    elif exchange == 'aster':
-        exchange_config = {
-            'api_key': api_key,
-            'secret_key': secret_key,
-        }
-    else:
-        print("錯誤：不支持的交易所。")
-        return
+    exchange_config = {
+        'api_key': api_key,
+        'secret_key': secret_key,
+        'base_url': os.getenv('BASE_URL', 'https://api.backpack.work'),
+        'api_version': 'v1',
+        'default_window': '5000'
+    }
 
     market_type_input = input("請選擇市場類型 (spot/perp，默認 spot): ").strip().lower()
     market_type = market_type_input if market_type_input in ("spot", "perp") else "spot"
@@ -341,7 +325,7 @@ def run_market_maker_command(api_key, secret_key, ws_proxy=None):
     print(f"已選擇策略: {strategy}")
 
     symbol = input("請輸入要做市的交易對 (例如: SOL_USDC): ")
-    client = _get_client(exchange=exchange, exchange_config=exchange_config)
+    client = _get_client(exchange_config=exchange_config)
     market_limits = client.get_market_limits(symbol)
     if not market_limits:
         print(f"交易對 {symbol} 不存在或不可交易")
@@ -424,9 +408,6 @@ def run_market_maker_command(api_key, secret_key, ws_proxy=None):
         if USE_DATABASE:
             db = Database()
         # 原有的 exchange_config 創建邏輯已被新的動態配置取代
-							   
-									
-		 
 
         if market_type == "perp":
             if strategy == "maker_hedge":
@@ -444,7 +425,7 @@ def run_market_maker_command(api_key, secret_key, ws_proxy=None):
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                     ws_proxy=ws_proxy,
-                    exchange=exchange,
+                    # exchange=exchange, # Removed
                     exchange_config=exchange_config,
                     enable_database=USE_DATABASE,
                     market_type="perp"
@@ -465,7 +446,7 @@ def run_market_maker_command(api_key, secret_key, ws_proxy=None):
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                     ws_proxy=ws_proxy,
-                    exchange=exchange,
+                    # exchange=exchange, # Removed
                     exchange_config=exchange_config,
                     enable_database=USE_DATABASE
                 )
@@ -479,7 +460,7 @@ def run_market_maker_command(api_key, secret_key, ws_proxy=None):
                     base_spread_percentage=spread_percentage,
                     order_quantity=quantity,
                     ws_proxy=ws_proxy,
-                    exchange=exchange,
+                    # exchange=exchange, # Removed
                     exchange_config=exchange_config,
                     enable_database=USE_DATABASE,
                     market_type="spot"
@@ -497,7 +478,7 @@ def run_market_maker_command(api_key, secret_key, ws_proxy=None):
                     base_asset_target_percentage=base_asset_target_percentage,
                     rebalance_threshold=rebalance_threshold,
                     ws_proxy=ws_proxy,
-                    exchange=exchange,
+                    # exchange=exchange, # Removed
                     exchange_config=exchange_config,
                     enable_database=USE_DATABASE
                 )
@@ -515,15 +496,16 @@ def run_market_maker_command(api_key, secret_key, ws_proxy=None):
             except Exception:
                 pass
 
+
 def rebalance_settings_command():
     """重平設置管理命令"""
     print("\n=== 重平設置管理 ===")
     print("1 - 查看重平設置説明")
     print("2 - 測試重平設置")
     print("3 - 返回主菜單")
-    
+
     choice = input("請選擇操作: ")
-    
+
     if choice == '1':
         print("\n=== 重平設置説明 ===")
         print("重平功能用於保持資產配置的平衡，避免因市場波動導致的資產比例失衡。")
@@ -539,37 +521,38 @@ def rebalance_settings_command():
         print("- 重平衡會產生交易手續費")
         print("- 過低的閾值可能導致頻繁重平衡")
         print("- 過高的閾值可能無法及時控制風險")
-        
+
     elif choice == '2':
         print("\n=== 測試重平設置 ===")
         enable_rebalance, base_asset_target_percentage, rebalance_threshold = configure_rebalance_settings()
-        
+
         # 模擬計算示例
         if enable_rebalance:
             print(f"\n=== 模擬計算示例 ===")
             total_assets = 1000  # 假設總資產 1000 USDC
             ideal_base_value = total_assets * (base_asset_target_percentage / 100)
             quote_asset_target_percentage = 100 - base_asset_target_percentage
-            
+
             print(f"假設總資產: {total_assets} USDC")
             print(f"理想基礎資產價值: {ideal_base_value} USDC ({base_asset_target_percentage}%)")
             print(f"理想報價資產價值: {total_assets - ideal_base_value} USDC ({quote_asset_target_percentage}%)")
             print(f"重平觸發閾值: {rebalance_threshold}% = {total_assets * (rebalance_threshold / 100)} USDC")
-            
+
             # 示例偏差情況
             print(f"\n觸發重平衡的情況示例:")
             trigger_amount = total_assets * (rebalance_threshold / 100)
             high_threshold = ideal_base_value + trigger_amount
             low_threshold = ideal_base_value - trigger_amount
-            
+
             print(f"- 當基礎資產價值 > {high_threshold:.2f} USDC 時，將賣出基礎資產")
             print(f"- 當基礎資產價值 < {low_threshold:.2f} USDC 時，將買入基礎資產")
             print(f"- 在 {low_threshold:.2f} - {high_threshold:.2f} USDC 範圍內不會觸發重平衡")
-        
+
     elif choice == '3':
         return
     else:
         print("無效選擇")
+
 
 def trading_stats_command(api_key, secret_key):
     """查看交易統計命令"""
@@ -582,14 +565,14 @@ def trading_stats_command(api_key, secret_key):
     try:
         # 初始化數據庫
         db = Database()
-        
+
         # 獲取今日統計
         today = datetime.now().strftime('%Y-%m-%d')
         today_stats = db.get_trading_stats(symbol, today)
-        
+
         print("\n=== 做市商交易統計 ===")
         print(f"交易對: {symbol}")
-        
+
         if today_stats and len(today_stats) > 0:
             stat = today_stats[0]
             maker_buy = stat['maker_buy_volume']
@@ -601,10 +584,10 @@ def trading_stats_command(api_key, secret_key):
             net = stat['net_profit']
             avg_spread = stat.get('avg_spread', 0)
             volatility = stat.get('volatility', 0)
-            
+
             total_volume = maker_buy + maker_sell + taker_buy + taker_sell
             maker_percentage = ((maker_buy + maker_sell) / total_volume * 100) if total_volume > 0 else 0
-            
+
             print(f"\n今日統計 ({today}):")
             print(f"總成交量: {total_volume}")
             print(f"Maker買入量: {maker_buy}")
@@ -619,10 +602,10 @@ def trading_stats_command(api_key, secret_key):
             print(f"凈利潤: {net:.8f}")
         else:
             print(f"今日沒有 {symbol} 的交易記錄")
-        
+
         # 獲取所有時間的統計
         all_time_stats = db.get_all_time_stats(symbol)
-        
+
         if all_time_stats:
             maker_buy = all_time_stats['total_maker_buy']
             maker_sell = all_time_stats['total_maker_sell']
@@ -632,10 +615,10 @@ def trading_stats_command(api_key, secret_key):
             fees = all_time_stats['total_fees']
             net = all_time_stats['total_net_profit']
             avg_spread = all_time_stats.get('avg_spread_all_time', 0)
-            
+
             total_volume = maker_buy + maker_sell + taker_buy + taker_sell
             maker_percentage = ((maker_buy + maker_sell) / total_volume * 100) if total_volume > 0 else 0
-            
+
             print(f"\n累計統計:")
             print(f"總成交量: {total_volume}")
             print(f"Maker買入量: {maker_buy}")
@@ -649,21 +632,22 @@ def trading_stats_command(api_key, secret_key):
             print(f"凈利潤: {net:.8f}")
         else:
             print(f"沒有 {symbol} 的歷史交易記錄")
-        
+
         # 獲取最近交易
         recent_trades = db.get_recent_trades(symbol, 10)
-        
+
         if recent_trades and len(recent_trades) > 0:
             print("\n最近10筆成交:")
             for i, trade in enumerate(recent_trades):
                 maker_str = "Maker" if trade['maker'] else "Taker"
-                print(f"{i+1}. {trade['timestamp']} - {trade['side']} {trade['quantity']} @ {trade['price']} ({maker_str}) 手續費: {trade['fee']:.8f}")
+                print(
+                    f"{i + 1}. {trade['timestamp']} - {trade['side']} {trade['quantity']} @ {trade['price']} ({maker_str}) 手續費: {trade['fee']:.8f}")
         else:
             print(f"沒有 {symbol} 的最近成交記錄")
-        
+
         # 關閉數據庫連接
         db.close()
-        
+
     except Exception as e:
         print(f"查看交易統計時發生錯誤: {str(e)}")
         import traceback
@@ -711,32 +695,32 @@ def market_analysis_command(api_key, secret_key, ws_proxy=None):
     symbol = input("請輸入要分析的交易對 (例如: SOL_USDC): ")
     try:
         print("\n執行市場分析...")
-        
+
         # 創建臨時WebSocket連接
         ws = BackpackWebSocket(api_key, secret_key, symbol, auto_reconnect=True, proxy=ws_proxy)
         ws.connect()
-        
+
         # 等待連接建立
         wait_time = 0
         max_wait_time = 5
         while not ws.connected and wait_time < max_wait_time:
             time.sleep(0.5)
             wait_time += 0.5
-        
+
         if not ws.connected:
             print("WebSocket連接超時，無法進行完整分析")
         else:
             # 初始化訂單簿
             ws.initialize_orderbook()
-            
+
             # 訂閲必要數據流
             ws.subscribe_depth()
             ws.subscribe_bookTicker()
-            
+
             # 等待數據更新
             print("等待數據更新...")
             time.sleep(3)
-            
+
             # 獲取K線數據分析趨勢
             print("獲取歷史數據分析趨勢...")
             klines = _get_client().get_klines(symbol, "15m")
@@ -747,11 +731,11 @@ def market_analysis_command(api_key, secret_key, ws_proxy=None):
                 print(f"獲取K線數據出錯: {klines['error']}")
             else:
                 print(f"收到 {len(klines) if isinstance(klines, list) else type(klines)} 條K線數據")
-                
+
                 # 檢查第一條記錄以確定結構
                 if isinstance(klines, list) and len(klines) > 0:
                     print(f"第一條K線數據: {klines[0]}")
-                    
+
                     # 根據實際結構提取收盤價
                     try:
                         if isinstance(klines[0], dict):
@@ -783,54 +767,55 @@ def market_analysis_command(api_key, secret_key, ws_proxy=None):
                         else:
                             print(f"未知的K線數據類型: {type(klines[0])}")
                             raise ValueError("未知的K線數據類型")
-                        
+
                         # 計算移動平均
                         short_ma = sum(prices[-5:]) / 5 if len(prices) >= 5 else sum(prices) / len(prices)
                         medium_ma = sum(prices[-20:]) / 20 if len(prices) >= 20 else short_ma
                         long_ma = sum(prices[-50:]) / 50 if len(prices) >= 50 else medium_ma
-                        
+
                         # 判斷趨勢
                         trend = "上漲" if short_ma > medium_ma > long_ma else "下跌" if short_ma < medium_ma < long_ma else "盤整"
-                        
+
                         # 計算波動率
                         volatility = calculate_volatility(prices)
-                        
+
                         print("\n市場趨勢分析:")
                         print(f"短期均價 (5週期): {short_ma:.6f}")
                         print(f"中期均價 (20週期): {medium_ma:.6f}")
                         print(f"長期均價 (50週期): {long_ma:.6f}")
                         print(f"當前趨勢: {trend}")
                         print(f"波動率: {volatility:.2f}%")
-                        
+
                         # 獲取最新價格和波動性指標
                         current_price = ws.get_current_price()
                         liquidity_profile = ws.get_liquidity_profile()
-                        
+
                         if current_price and liquidity_profile:
                             print(f"\n當前價格: {current_price}")
                             print(f"相對長期均價: {(current_price / long_ma - 1) * 100:.2f}%")
-                            
+
                             # 流動性分析
                             buy_volume = liquidity_profile['bid_volume']
                             sell_volume = liquidity_profile['ask_volume']
                             imbalance = liquidity_profile['imbalance']
-                            
+
                             print("\n市場流動性分析:")
                             print(f"買單量: {buy_volume:.4f}")
                             print(f"賣單量: {sell_volume:.4f}")
-                            print(f"買賣比例: {(buy_volume/sell_volume):.2f}" if sell_volume > 0 else "買賣比例: 無限")
-                            
+                            print(
+                                f"買賣比例: {(buy_volume / sell_volume):.2f}" if sell_volume > 0 else "買賣比例: 無限")
+
                             # 判斷市場情緒
                             sentiment = "買方壓力較大" if imbalance > 0.2 else "賣方壓力較大" if imbalance < -0.2 else "買賣壓力平衡"
                             print(f"市場情緒: {sentiment} ({imbalance:.2f})")
-                            
+
                             # 給出建議的做市參數
                             print("\n建議做市參數:")
-                            
+
                             # 根據波動率調整價差
                             suggested_spread = max(0.2, min(2.0, volatility * 0.2))
                             print(f"建議價差: {suggested_spread:.2f}%")
-                            
+
                             # 根據流動性調整訂單數量
                             liquidity_score = (buy_volume + sell_volume) / 2
                             orders_suggestion = 3
@@ -839,7 +824,7 @@ def market_analysis_command(api_key, secret_key, ws_proxy=None):
                             elif liquidity_score < 1:
                                 orders_suggestion = 2
                             print(f"建議訂單數: {orders_suggestion}")
-                            
+
                             # 根據趨勢和情緒建議執行模式
                             if trend == "上漲" and imbalance > 0:
                                 mode = "adaptive"
@@ -850,7 +835,7 @@ def market_analysis_command(api_key, secret_key, ws_proxy=None):
                             else:
                                 mode = "standard"
                                 print("建議執行模式: 標準模式")
-                            
+
                             # 建議重平設置
                             print("\n建議重平設置:")
                             if volatility > 5:
@@ -871,15 +856,16 @@ def market_analysis_command(api_key, secret_key, ws_proxy=None):
                         traceback.print_exc()
                 else:
                     print("未收到有效的K線數據")
-        
+
         # 關閉WebSocket連接
         if ws:
             ws.close()
-            
+
     except Exception as e:
         print(f"市場分析時發生錯誤: {str(e)}")
         import traceback
         traceback.print_exc()
+
 
 def main_cli(api_key=API_KEY, secret_key=SECRET_KEY, ws_proxy=None, enable_database=ENABLE_DATABASE):
     """主CLI函數"""

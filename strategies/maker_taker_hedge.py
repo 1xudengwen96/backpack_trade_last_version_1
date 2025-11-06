@@ -250,10 +250,10 @@ class _MakerTakerHedgeMixin:
                 "symbol": self.symbol,
             }
 
-            if getattr(self, "exchange", "backpack") == "backpack":
-                order["timeInForce"] = "IOC"
-                order["autoLendRedeem"] = True
-                order["autoLend"] = True
+            # Simplified: Always apply Backpack-specific parameters
+            order["timeInForce"] = "IOC"
+            order["autoLendRedeem"] = True
+            order["autoLend"] = True
 
             if isinstance(self, PerpetualMarketMaker):
                 order["reduceOnly"] = True
@@ -351,10 +351,10 @@ class _MakerTakerHedgeMixin:
             "timeInForce": "GTC",
         }
 
-        if getattr(self, "exchange", "backpack") == "backpack":
-            order["postOnly"] = True
-            order["autoLendRedeem"] = True
-            order["autoLend"] = True
+        # Simplified: Always apply Backpack-specific parameters
+        order["postOnly"] = True
+        order["autoLendRedeem"] = True
+        order["autoLend"] = True
 
         return order
 
@@ -363,16 +363,16 @@ class _SpotMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, MarketMaker):
     """現貨 Maker 掛單 + Taker 對沖實作。"""
 
     def __init__(
-        self,
-        api_key: str,
-        secret_key: str,
-        symbol: str,
-        base_spread_percentage: float = 0.0,
-        order_quantity: Optional[float] = None,
-        ws_proxy: Optional[str] = None,
-        exchange: str = "backpack",
-        exchange_config: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
+            self,
+            api_key: str,
+            secret_key: str,
+            symbol: str,
+            base_spread_percentage: float = 0.0,
+            order_quantity: Optional[float] = None,
+            ws_proxy: Optional[str] = None,
+            # exchange: str = "backpack", # Removed
+            # exchange_config: Optional[Dict[str, Any]] = None, # Removed
+            **kwargs: Any,
     ) -> None:
         super().__init__(
             api_key=api_key,
@@ -381,8 +381,8 @@ class _SpotMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, MarketMaker):
             base_spread_percentage=base_spread_percentage,
             order_quantity=order_quantity,
             ws_proxy=ws_proxy,
-            exchange=exchange,
-            exchange_config=exchange_config,
+            # exchange=exchange, # Removed
+            # exchange_config=exchange_config, # Removed
             hedge_label="現貨僅掛買一/賣一",
             **kwargs,
         )
@@ -392,22 +392,22 @@ class _PerpMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, PerpetualMarketMaker):
     """永續合約 Maker 掛單 + Taker 對沖實作。"""
 
     def __init__(
-        self,
-        api_key: str,
-        secret_key: str,
-        symbol: str,
-        base_spread_percentage: float = 0.0,
-        order_quantity: Optional[float] = None,
-        target_position: float = 0.0,
-        max_position: float = 1.0,
-        position_threshold: float = 0.1,
-        inventory_skew: float = 0.0,
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None,
-        ws_proxy: Optional[str] = None,
-        exchange: str = "backpack",
-        exchange_config: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
+            self,
+            api_key: str,
+            secret_key: str,
+            symbol: str,
+            base_spread_percentage: float = 0.0,
+            order_quantity: Optional[float] = None,
+            target_position: float = 0.0,
+            max_position: float = 1.0,
+            position_threshold: float = 0.1,
+            inventory_skew: float = 0.0,
+            stop_loss: Optional[float] = None,
+            take_profit: Optional[float] = None,
+            ws_proxy: Optional[str] = None,
+            # exchange: str = "backpack", # Removed
+            # exchange_config: Optional[Dict[str, Any]] = None, # Removed
+            **kwargs: Any,
     ) -> None:
         super().__init__(
             api_key=api_key,
@@ -422,8 +422,8 @@ class _PerpMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, PerpetualMarketMaker):
             stop_loss=stop_loss,
             take_profit=take_profit,
             ws_proxy=ws_proxy,
-            exchange=exchange,
-            exchange_config=exchange_config,
+            # exchange=exchange, # Removed
+            # exchange_config=exchange_config, # Removed
             hedge_label="永續合約僅掛買一/賣一",
             **kwargs,
         )
@@ -437,4 +437,3 @@ class MakerTakerHedgeStrategy:
         if market == "perp":
             return _PerpMakerTakerHedgeStrategy(*args, **kwargs)
         return _SpotMakerTakerHedgeStrategy(*args, **kwargs)
-

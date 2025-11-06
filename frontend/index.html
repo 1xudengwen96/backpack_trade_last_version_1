@@ -88,11 +88,13 @@
             <h1>BACKPACK 控制面板</h1>
             <h2>启动新机器人</h2>
             <form id="bot-form">
+                <!--
                 <label for="exchange">交易所:</label>
                 <select id="exchange" name="exchange">
                     <option value="backpack" selected>Backpack</option>
                     <option value="aster">Aster</option>
                 </select>
+                -->
 
                 <label for="market_type">市场类型:</label>
                 <select id="market_type" name="market_type">
@@ -151,7 +153,8 @@
         const marketTypeSelect = document.getElementById('market_type'); // (新) 获取市场类型选择框
         const symbolSelect = document.getElementById('symbol_select'); const customSymbolWrapper = document.getElementById('symbol_custom_wrapper'); const customSymbolInput = document.getElementById('symbol_custom');
         const overallPnlEl = document.getElementById('overall-pnl'); const overallTradesEl = document.getElementById('overall-trades'); const overallVolumeEl = document.getElementById('overall-volume'); const overallFeesEl = document.getElementById('overall-fees'); const overallChartCanvas = document.getElementById('overall-chart'); const overallChartPlaceholder = document.getElementById('overall-chart-placeholder');
-        const spotBalanceList = document.getElementById('spot-balance-list'); const futuresBalanceList = document.getElementById('futures-balance-list'); const balanceExchangeName = document.getElementById('balance-exchange-name'); const refreshBalanceBtn = document.getElementById('btn-refresh-balance'); const exchangeSelectForm = document.getElementById('exchange');
+        const spotBalanceList = document.getElementById('spot-balance-list'); const futuresBalanceList = document.getElementById('futures-balance-list'); const balanceExchangeName = document.getElementById('balance-exchange-name'); const refreshBalanceBtn = document.getElementById('btn-refresh-balance');
+        // const exchangeSelectForm = document.getElementById('exchange'); // Removed
 
         const botCharts = {}; const botPnlData = {}; let overallChartInstance = null; let overallPnlData = { labels: [], data: [] };
 
@@ -165,8 +168,8 @@
         const perpSymbols = [
             "SOL_USDC_PERP", "BTC_USDC_PERP", "ETH_USDC_PERP", // 假设 Backpack 使用 _PERP 后缀
             "WIF_USDC_PERP", "BONK_USDC_PERP", "PYTH_USDC_PERP",
-            "JUP_USDC_PERP",
-            "SOLUSDT" // Aster 的合约符号
+            "JUP_USDC_PERP"
+            // "SOLUSDT" // Removed Aster-specific symbol
             // 根据需要添加更多...
         ];
         const otherOptionValue = "Other"; // 自定义选项的值
@@ -214,7 +217,7 @@
         });
 
         // 启动机器人
-        botForm.addEventListener('submit', async (e) => { e.preventDefault(); const formData = new FormData(botForm); const config = {}; formData.forEach((value, key) => { if (key === 'symbol_select' || key === 'symbol_custom') return; if (value === "") { config[key] = null; } else { const num = Number(value); config[key] = isNaN(num) ? value : num; } }); const selectedSymbolValue = symbolSelect.value; if (selectedSymbolValue === otherOptionValue) { config['symbol'] = customSymbolInput.value.trim().toUpperCase(); } else { config['symbol'] = selectedSymbolValue; } if (!config['symbol']) { alert("请选择或输入交易对"); return; } console.log("发送启动配置:", config); try { const response = await fetch('/api/start_bot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }); const result = await response.json(); if (!response.ok) { alert(`启动失败: ${result.error || '未知'}`); } else { alert(`成功: ${result.message}`); await updateStatus(); await updateBalance(); } } catch (err) { alert(`请求失败: ${err.message}`); } });
+        botForm.addEventListener('submit', async (e) => { e.preventDefault(); const formData = new FormData(botForm); const config = {}; formData.forEach((value, key) => { if (key === 'symbol_select' || key === 'symbol_custom' || key === 'exchange') return; if (value === "") { config[key] = null; } else { const num = Number(value); config[key] = isNaN(num) ? value : num; } }); const selectedSymbolValue = symbolSelect.value; if (selectedSymbolValue === otherOptionValue) { config['symbol'] = customSymbolInput.value.trim().toUpperCase(); } else { config['symbol'] = selectedSymbolValue; } if (!config['symbol']) { alert("请选择或输入交易对"); return; } console.log("发送启动配置:", config); try { const response = await fetch('/api/start_bot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }); const result = await response.json(); if (!response.ok) { alert(`启动失败: ${result.error || '未知'}`); } else { alert(`成功: ${result.message}`); await updateStatus(); await updateBalance(); } } catch (err) { alert(`请求失败: ${err.message}`); } });
 
         // 停止机器人
         statusList.addEventListener('click', async (e) => { if (e.target.classList.contains('btn-stop-dynamic')) { const botId = e.target.dataset.botId; if (!confirm(`确定停止 ${botId} ?`)) { return; } try { const response = await fetch('/api/stop_bot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bot_id: botId }) }); const result = await response.json(); if (!response.ok) { alert(`停止失败: ${result.error || '未知'}`); } else { alert(`成功: ${result.message}`); await updateStatus(); await updateBalance(); } } catch (err) { alert(`请求失败: ${err.message}`); } } });
@@ -245,7 +248,28 @@
         function updateOverallStats(runningBotsList) { /* ... (逻辑与上次相同，省略) ... */ let totalSessionNetPnl = 0, totalTrades = 0, totalVolumeBought = 0, totalVolumeSold = 0, totalSessionFees = 0, quoteAsset = 'USD', baseAsset = 'VARIOUS'; if (runningBotsList.length > 0) { quoteAsset = runningBotsList[0].quote_asset || 'USD'; baseAsset = runningBotsList.length === 1 ? runningBotsList[0].base_asset || 'BASE' : 'VARIOUS'; } runningBotsList.forEach(bot => { totalSessionNetPnl += parseFloat(bot.session_net_pnl || 0); totalTrades += parseInt(bot.trades_executed || 0); totalVolumeBought += parseFloat(bot.total_bought || 0); totalVolumeSold += parseFloat(bot.total_sold || 0); totalSessionFees += parseFloat(bot.session_fees || 0); }); overallPnlEl.textContent = `${totalSessionNetPnl.toFixed(4)} ${quoteAsset}`; overallPnlEl.className = totalSessionNetPnl > 0 ? 'pnl-positive' : (totalSessionNetPnl < 0 ? 'pnl-negative' : ''); overallTradesEl.textContent = totalTrades; overallVolumeEl.textContent = `${(totalVolumeBought + totalVolumeSold).toFixed(3)} (${baseAsset})`; overallFeesEl.textContent = `${totalSessionFees.toFixed(4)} ${quoteAsset}`; const now = new Date(); overallPnlData.labels.push(now); overallPnlData.data.push(totalSessionNetPnl); if (overallPnlData.labels.length > 100) { overallPnlData.labels.shift(); overallPnlData.data.shift(); } if (runningBotsList.length > 0 && overallPnlData.data.length > 0) { overallChartPlaceholder.style.display = 'none'; overallChartCanvas.style.display = 'block'; if (overallChartInstance) { overallChartInstance.data.labels = overallPnlData.labels; overallChartInstance.data.datasets[0].data = overallPnlData.data; overallChartInstance.update('none'); } else { const ctx = overallChartCanvas.getContext('2d'); overallChartInstance = new Chart(ctx, { type: 'line', data: { labels: overallPnlData.labels, datasets: [{ label: `总 PnL (${quoteAsset})`, data: overallPnlData.data, borderColor: 'rgb(75, 192, 192)', backgroundColor: 'rgba(75, 192, 192, 0.1)', fill: true, tension: 0.1, pointRadius: 0, borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'time', time: { unit: 'minute', tooltipFormat: 'HH:mm:ss', displayFormats: { minute: 'HH:mm' } }, ticks: { color: 'var(--text-secondary)', maxTicksLimit: 8 }, grid: { color: 'var(--dark-border)' } }, y: { beginAtZero: false, ticks: { color: 'var(--text-secondary)', precision: 4 }, grid: { color: 'var(--dark-border)' } } }, plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, backgroundColor: 'rgba(0,0,0,0.7)', titleColor: 'var(--text-secondary)', bodyColor: 'var(--text-primary)', } }, animation: false } }); } } else { overallChartCanvas.style.display = 'none'; overallChartPlaceholder.style.display = 'flex'; if(overallChartInstance) { overallChartInstance.destroy(); overallChartInstance = null; } overallPnlData = { labels: [], data: [] }; } }
 
         // 更新账户余额函数
-        async function updateBalance() { const selectedExchange = exchangeSelectForm.value; balanceExchangeName.textContent = selectedExchange.charAt(0).toUpperCase() + selectedExchange.slice(1); spotBalanceList.innerHTML = `<li class="no-balance-msg">正在加载现货余额...</li>`; futuresBalanceList.innerHTML = `<li class="no-balance-msg">正在加载合约余额...</li>`; try { const response = await fetch(`/api/balance?exchange=${selectedExchange}`); if (!response.ok) { const errorData = await response.json(); throw new Error(errorData.error || `HTTP ${response.status}`); } const data = await response.json(); const spotBalances = data.spot_balances || {}; const futuresBalances = data.futures_balances || {}; renderBalanceList(spotBalanceList, spotBalances, "未找到现货/抵押品余额"); renderBalanceList(futuresBalanceList, futuresBalances, "未找到合约余额 (或无仓位)"); } catch (err) { console.error("获取余额失败:", err); spotBalanceList.innerHTML = `<li><strong style="color: var(--log-error);">获取现货余额失败: ${err.message}</strong></li>`; futuresBalanceList.innerHTML = `<li><strong style="color: var(--log-error);">获取合约余额失败: ${err.message}</strong></li>`; } }
+        async function updateBalance() {
+            // const selectedExchange = exchangeSelectForm.value; // Removed
+            balanceExchangeName.textContent = "Backpack"; // Hardcoded
+            spotBalanceList.innerHTML = `<li class="no-balance-msg">正在加载现货余额...</li>`;
+            futuresBalanceList.innerHTML = `<li class="no-balance-msg">正在加载合约余额...</li>`;
+            try {
+                const response = await fetch(`/api/balance`); // Removed query parameter
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                const spotBalances = data.spot_balances || {};
+                const futuresBalances = data.futures_balances || {};
+                renderBalanceList(spotBalanceList, spotBalances, "未找到现货/抵押品余额");
+                renderBalanceList(futuresBalanceList, futuresBalances, "未找到合约余额 (或无仓位)");
+            } catch (err) {
+                console.error("获取余额失败:", err);
+                spotBalanceList.innerHTML = `<li><strong style="color: var(--log-error);">获取现货余额失败: ${err.message}</strong></li>`;
+                futuresBalanceList.innerHTML = `<li><strong style="color: var(--log-error);">获取合约余额失败: ${err.message}</strong></li>`;
+            }
+        }
         // 渲染余额列表
         function renderBalanceList(listElement, balances, emptyMsg) { listElement.innerHTML = ""; const priorityAssets = ['USDT', 'USDC', 'SOL', 'BTC', 'ETH']; let displayedAssets = 0; const assetsToShow = {...balances}; priorityAssets.forEach(asset => { if (assetsToShow[asset]) { renderSingleBalanceItem(listElement, asset, assetsToShow[asset]); delete assetsToShow[asset]; displayedAssets++; } }); for (const asset in assetsToShow) { const balance = assetsToShow[asset]; if (balance.total && parseFloat(balance.total) > 0.000000001) { renderSingleBalanceItem(listElement, asset, balance); displayedAssets++; } } if (displayedAssets === 0) { listElement.innerHTML = `<li class="no-balance-msg">${emptyMsg}</li>`; } }
         // 渲染单个余额项
@@ -253,7 +277,7 @@
 
         refreshBtn.addEventListener('click', updateStatus);
         refreshBalanceBtn.addEventListener('click', updateBalance);
-        exchangeSelectForm.addEventListener('change', updateBalance);
+        // exchangeSelectForm.addEventListener('change', updateBalance); // Removed
 
         // --- 初始化 ---
         document.addEventListener('DOMContentLoaded', () => {

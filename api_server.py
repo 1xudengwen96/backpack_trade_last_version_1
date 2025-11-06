@@ -19,7 +19,7 @@ try:
     from strategies.perp_market_maker import PerpetualMarketMaker
     from strategies.maker_taker_hedge import MakerTakerHedgeStrategy
     from api.bp_client import BPClient
-    from api.aster_client import AsterClient
+    # from api.aster_client import AsterClient # Removed
 except ImportError as e:
     print(f"[错误] 导入核心模块失败: {e}")
     # ... (错误提示与上次相同) ...
@@ -209,7 +209,7 @@ async def websocket_logs(websocket: WebSocket):
 # -------------------------------------------------------------------
 class BotConfig(BaseModel):  # ... (代码与上次相同) ...
     symbol: str = Field(...)
-    exchange: str = Field(default='backpack')
+    # exchange: str = Field(default='backpack') # Removed
     market_type: str = Field(default='spot')
     strategy: str = Field(default='standard')
     spread: float = Field(...)
@@ -233,13 +233,10 @@ class BotConfig(BaseModel):  # ... (代码与上次相同) ...
 # 5. API 端点 (包含所有语法修正)
 # -------------------------------------------------------------------
 
-def _get_api_credentials(exchange: str):  # ... (代码与上次相同) ...
-    exchange_lower = exchange.lower()
-    if exchange_lower == "aster":
-        return os.getenv("ASTER_API_KEY"), os.getenv("ASTER_SECRET_KEY"), os.getenv('ASTER_PROXY_WEBSOCKET'), None
-    else:
-        return os.getenv("BACKPACK_KEY"), os.getenv("BACKPACK_SECRET"), os.getenv(
-            'BACKPACK_PROXY_WEBSOCKET'), os.getenv('BASE_URL', 'https://api.backpack.work')
+def _get_api_credentials():  # ... (代码与上次相同) ...
+    # Simplified: Always return Backpack credentials
+    return os.getenv("BACKPACK_KEY"), os.getenv("BACKPACK_SECRET"), os.getenv(
+        'BACKPACK_PROXY_WEBSOCKET'), os.getenv('BASE_URL', 'https://api.backpack.work')
 
 
 def _format_balance(value_str: Any, decimals: int = 8) -> str:
@@ -280,9 +277,10 @@ def run_bot_thread(bot_instance: MarketMaker, duration: int, interval: int, bot_
 
 
 @app.get("/api/balance")
-async def get_account_balance(exchange: str = Query('backpack', description="交易所名称")):
-    logger.info(f"收到获取余额请求: {exchange}")
-    api_key, secret_key, _, base_url = _get_api_credentials(exchange)
+async def get_account_balance():  # Removed exchange parameter
+    logger.info(f"收到获取余额请求: Backpack")
+    api_key, secret_key, _, base_url = _get_api_credentials()
+    exchange = "backpack"
 
     if not api_key or not secret_key: return JSONResponse(status_code=401,
                                                           content={"error": f"未配置 {exchange.upper()} API 密钥"})
@@ -294,81 +292,63 @@ async def get_account_balance(exchange: str = Query('backpack', description="交
         exchange_config = {'api_key': api_key, 'secret_key': secret_key}
         if base_url: exchange_config['base_url'] = base_url
 
-        if exchange.lower() == "aster":
-            client = AsterClient(exchange_config)
-            futures_raw = client.make_request("GET", "/fapi/v2/balance", api_key=api_key, secret_key=secret_key,
-                                              instruction=True)
-            if isinstance(futures_raw, list):
-                for item in futures_raw:
-                    asset = item.get("asset")
-                    if asset:
-                        available = _format_balance(item.get("availableBalance", "0"));
-                        total = _format_balance(item.get("balance", "0"));
-                        locked = "0.0"
-                        try:
-                            locked_val = Decimal(total) - Decimal(available); locked = _format_balance(str(locked_val))
-                        except Exception:
-                            pass
-                        response_data["futures_balances"][asset] = {"available": available, "locked": locked,
-                                                                    "total": total}
-            elif isinstance(futures_raw, dict):
-                logger.error(f"获取 Aster 合约余额失败: {futures_raw.get('error')}")
-        else:  # backpack
-            client = BPClient(exchange_config)
-            spot_raw = client.get_balance();
-            collateral_raw = client.get_collateral();
-            temp_balances = {}
-            if isinstance(spot_raw, dict) and "error" not in spot_raw:
-                for asset, details in spot_raw.items():
+        # Simplified: Removed Aster logic, only Backpack logic remains
+        client = BPClient(exchange_config)
+        spot_raw = client.get_balance();
+        collateral_raw = client.get_collateral();
+        temp_balances = {}
+        if isinstance(spot_raw, dict) and "error" not in spot_raw:
+            for asset, details in spot_raw.items():
+                try:
+                    temp_balances[asset] = {'available': Decimal(details.get('available', '0')),
+                                            'locked': Decimal(details.get('locked', '0')),
+                                            'collateral_available': Decimal('0'), 'collateral_total': Decimal('0')}
+                except Exception as e:
+                    logger.warning(f"解析 BP 现货 {asset} 失败: {e}")
+        elif isinstance(spot_raw, dict):
+            logger.error(f"获取 BP 现货余额失败: {spot_raw.get('error')}")
+        if isinstance(collateral_raw, dict) and "error" not in collateral_raw:
+            for item in collateral_raw.get('assets', []):
+                symbol = item.get('symbol')
+                if symbol:
                     try:
-                        temp_balances[asset] = {'available': Decimal(details.get('available', '0')),
-                                                'locked': Decimal(details.get('locked', '0')),
-                                                'collateral_available': Decimal('0'), 'collateral_total': Decimal('0')}
+                        coll_avail = Decimal(item.get('availableQuantity', '0'));
+                        coll_total = Decimal(item.get('totalQuantity', '0'))
+                        if symbol not in temp_balances: temp_balances[symbol] = {'available': Decimal('0'),
+                                                                                 'locked': Decimal('0'),
+                                                                                 'collateral_available': Decimal(
+                                                                                     '0'),
+                                                                                 'collateral_total': Decimal('0')}
+                        temp_balances[symbol]['collateral_available'] = coll_avail;
+                        temp_balances[symbol]['collateral_total'] = coll_total
                     except Exception as e:
-                        logger.warning(f"解析 BP 现货 {asset} 失败: {e}")
-            elif isinstance(spot_raw, dict):
-                logger.error(f"获取 BP 现货余额失败: {spot_raw.get('error')}")
-            if isinstance(collateral_raw, dict) and "error" not in collateral_raw:
-                for item in collateral_raw.get('assets', []):
-                    symbol = item.get('symbol')
-                    if symbol:
-                        try:
-                            coll_avail = Decimal(item.get('availableQuantity', '0'));
-                            coll_total = Decimal(item.get('totalQuantity', '0'))
-                            if symbol not in temp_balances: temp_balances[symbol] = {'available': Decimal('0'),
-                                                                                     'locked': Decimal('0'),
-                                                                                     'collateral_available': Decimal(
-                                                                                         '0'),
-                                                                                     'collateral_total': Decimal('0')}
-                            temp_balances[symbol]['collateral_available'] = coll_avail;
-                            temp_balances[symbol]['collateral_total'] = coll_total
-                        except Exception as e:
-                            logger.warning(f"解析 BP 抵押品 {symbol} 失败: {e}")
-            elif isinstance(collateral_raw, dict):
-                logger.warning(f"获取 BP 抵押品失败: {collateral_raw.get('error')}")
-            for asset, details in temp_balances.items():
-                available = details.get('available', Decimal('0'));
-                collateral_available = details.get('collateral_available', Decimal('0'));
-                locked = details.get('locked', Decimal('0'));
-                collateral_total = details.get('collateral_total', Decimal('0'))
-                total_available = available + collateral_available;
-                total_locked = locked;
-                total_all = available + locked + collateral_total
-                if total_all > Decimal('1e-9'): response_data["spot_balances"][asset] = {
-                    "available": _format_balance(str(total_available)), "locked": _format_balance(str(total_locked)),
-                    "total": _format_balance(str(total_all))}
-            # (修正) 将 get_positions 放入 try-except
-            try:
-                positions_raw = client.get_positions()
-                if isinstance(positions_raw, list):
-                    for pos in positions_raw: asset = pos.get('symbol');
-                    if asset and asset not in response_data["futures_balances"]: response_data["futures_balances"][
-                        asset] = {"available": "N/A", "locked": "N/A", "total": "N/A"}
-                elif isinstance(positions_raw, dict) and positions_raw.get("error") and "404" not in positions_raw.get(
+                        logger.warning(f"解析 BP 抵押品 {symbol} 失败: {e}")
+        elif isinstance(collateral_raw, dict):
+            logger.warning(f"获取 BP 抵押品失败: {collateral_raw.get('error')}")
+        for asset, details in temp_balances.items():
+            available = details.get('available', Decimal('0'));
+            collateral_available = details.get('collateral_available', Decimal('0'));
+            locked = details.get('locked', Decimal('0'));
+            collateral_total = details.get('collateral_total', Decimal('0'))
+            total_available = available + collateral_available;
+            total_locked = locked;
+            total_all = available + locked + collateral_total
+            if total_all > Decimal('1e-9'): response_data["spot_balances"][asset] = {
+                "available": _format_balance(str(total_available)), "locked": _format_balance(str(total_locked)),
+                "total": _format_balance(str(total_all))}
+        # (修正) 将 get_positions 放入 try-except
+        try:
+            positions_raw = client.get_positions()
+            if isinstance(positions_raw, list):
+                for pos in positions_raw: asset = pos.get('symbol');
+                if asset and asset not in response_data["futures_balances"]: response_data["futures_balances"][
+                    asset] = {"available": "N/A", "locked": "N/A", "total": "N/A"}
+            elif isinstance(positions_raw, dict) and positions_raw.get("error") and "404" not in positions_raw.get(
                     "error", ""):
-                    logger.warning(f"获取 BP 仓位失败: {positions_raw.get('error')}")
-            except Exception as pos_err:
-                logger.warning(f"获取 BP 仓位出错: {pos_err}")
+                logger.warning(f"获取 BP 仓位失败: {positions_raw.get('error')}")
+        except Exception as pos_err:
+            logger.warning(f"获取 BP 仓位出错: {pos_err}")
+
         logger.info(f"成功获取 {exchange} 余额信息");
         return response_data
     # (修正) 添加 except Exception as e:
@@ -380,20 +360,20 @@ async def get_account_balance(exchange: str = Query('backpack', description="交
 @app.post("/api/start_bot")
 async def start_bot(config: BotConfig):
     symbol = config.symbol
-    if config.exchange.lower() == 'backpack' and config.market_type == 'perp' and not symbol.endswith('_PERP'):
+    exchange = 'backpack'  # Hardcoded
+
+    if config.market_type == 'perp' and not symbol.endswith('_PERP'):
         symbol = f"{symbol}_PERP";
         logger.info(f"修正 BP 永续交易对: {config.symbol} -> {symbol}")
-    elif config.exchange.lower() == 'aster' and config.market_type == 'perp' and '_' in symbol:
-        logger.warning(f"Aster 永续交易对 '{symbol}' 可能格式不正确")
 
     bot_id = f"{symbol}_{config.market_type}"
     logger.info(f"收到启动请求: {bot_id} (策略: {config.strategy})")
     with _bot_lock:
         if bot_id in RUNNING_BOTS: return JSONResponse(status_code=400, content={"error": f"{bot_id} 已在运行"})
 
-    api_key, secret_key, ws_proxy, base_url = _get_api_credentials(config.exchange)
+    api_key, secret_key, ws_proxy, base_url = _get_api_credentials()
     if not api_key or not secret_key: return JSONResponse(status_code=400, content={
-        "error": f"未配置 {config.exchange.upper()} API 密钥"})
+        "error": f"未配置 {exchange.upper()} API 密钥"})
 
     market_maker: Optional[MarketMaker] = None
     # (修正) 确保整个过程在 try 块内
@@ -404,7 +384,8 @@ async def start_bot(config: BotConfig):
 
         common_args = {"symbol": symbol, "api_key": api_key, "secret_key": secret_key,
                        "base_spread_percentage": config.spread, "order_quantity": config.quantity, "ws_proxy": ws_proxy,
-                       "exchange": config.exchange, "exchange_config": exchange_config, "enable_database": db_enabled}
+                       # "exchange": config.exchange, # Removed
+                       "exchange_config": exchange_config, "enable_database": db_enabled}
 
         if config.market_type == 'perp':
             perp_args = {**common_args, "target_position": config.target_position, "max_position": config.max_position,
@@ -413,8 +394,9 @@ async def start_bot(config: BotConfig):
                          "max_orders": config.max_orders}
             valid_perp_args = {k: v for k, v in perp_args.items() if v is not None}
             if config.strategy == 'maker_hedge':
-                valid_perp_args.pop("max_orders", None); market_maker = MakerTakerHedgeStrategy(**valid_perp_args,
-                                                                                                market_type='perp')
+                valid_perp_args.pop("max_orders", None);
+                market_maker = MakerTakerHedgeStrategy(**valid_perp_args,
+                                                       market_type='perp')
             else:
                 market_maker = PerpetualMarketMaker(**valid_perp_args)
         else:  # spot
@@ -449,7 +431,8 @@ async def start_bot(config: BotConfig):
     except Exception as e:
         logger.error(f"启动 {bot_id} 未知错误: {e}", exc_info=True)
         with _bot_lock:
-            RUNNING_BOTS.pop(bot_id, None); BOT_THREADS.pop(bot_id, None)
+            RUNNING_BOTS.pop(bot_id, None);
+            BOT_THREADS.pop(bot_id, None)
         return JSONResponse(status_code=500, content={"error": f"启动失败: {str(e)}"})
 
 
