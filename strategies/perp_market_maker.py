@@ -22,21 +22,23 @@ class PerpetualMarketMaker(MarketMaker):
     """專為永續合約設計的做市策略。"""
 
     def __init__(
-        self,
-        api_key: str,
-        secret_key: str,
-        symbol: str,
-        target_position: float = 0.0,
-        max_position: float = 1.0,
-        position_threshold: float = 0.1,
-        inventory_skew: float = 0.0,
-        leverage: float = 1.0,
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None,
-        ws_proxy: Optional[str] = None,
-        # exchange: str = 'backpack', # Removed
-        # exchange_config: Optional[Dict[str, Any]] = None, # Removed
-        **kwargs,
+            self,
+            api_key: str,
+            secret_key: str,
+            symbol: str,
+            target_position: float = 0.0,
+            max_position: float = 1.0,
+            position_threshold: float = 0.1,
+            inventory_skew: float = 0.0,
+            leverage: float = 1.0,
+            stop_loss: Optional[float] = None,
+            take_profit: Optional[float] = None,
+            ws_proxy: Optional[str] = None,
+            # (新) 智能策略参数
+            stale_threshold_percent: Optional[float] = None,
+            volatility_config: Optional[Dict[str, float]] = None,
+            depth_weights: Optional[List[float]] = None,
+            **kwargs,
     ) -> None:
         """
         初始化永續合約做市策略。
@@ -51,6 +53,9 @@ class PerpetualMarketMaker(MarketMaker):
             inventory_skew (float): 庫存偏移，影響報價的不對稱性，以將淨倉位推向0。
             leverage (float): 槓桿倍數。
             ws_proxy (Optional[str]): WebSocket代理地址。
+            stale_threshold_percent (float): (智能策略) 過時訂單閾值百分比。
+            volatility_config (Optional[Dict]): (智能策略) 波動率配置。
+            depth_weights (Optional[List]): (智能策略) 深度分配權重。
         """
         kwargs.setdefault("enable_rebalance", False)
         super().__init__(
@@ -58,8 +63,10 @@ class PerpetualMarketMaker(MarketMaker):
             secret_key=secret_key,
             symbol=symbol,
             ws_proxy=ws_proxy,
-            # exchange=exchange, # Removed
-            # exchange_config=exchange_config, # Removed
+            # (新) 传递智能策略参数
+            stale_threshold_percent=stale_threshold_percent,
+            volatility_config=volatility_config,
+            depth_weights=depth_weights,
             **kwargs,
         )
 
@@ -202,8 +209,6 @@ class PerpetualMarketMaker(MarketMaker):
 
             position_data = result[0]
 
-
-
             return position_data
 
         except Exception as e:
@@ -244,7 +249,7 @@ class PerpetualMarketMaker(MarketMaker):
 
         # 嘗試從API獲取更準確的信息
         position_info = self._get_actual_position_info()
-        
+
         if position_info:
             # 使用API返回的精確信息
             avg_entry = float(position_info.get("entryPrice", 0))
@@ -316,7 +321,7 @@ class PerpetualMarketMaker(MarketMaker):
         # 強制更新倉位狀態
         self._update_position_state()
         position_state = self.get_position_state()
-        
+
         net = float(position_state.get("net", 0.0))
         if math.isclose(net, 0.0, abs_tol=self.min_order_size / 10):
             logger.debug("沒有活躍倉位，跳過止損止盈檢查")
@@ -324,18 +329,18 @@ class PerpetualMarketMaker(MarketMaker):
 
         # 獲取未實現盈虧
         unrealized = float(position_state.get("unrealized", 0.0))
-        
+
         # 如果API未實現盈虧為0但有倉位，手動計算
         if unrealized == 0.0 and net != 0.0:
             current_price = self.get_current_price()
             entry_price = float(position_state.get("avg_entry", 0.0))
-            
+
             if current_price and entry_price:
                 if net > 0:  # 多頭
                     calculated_pnl = (current_price - entry_price) * net
                 else:  # 空頭
                     calculated_pnl = (entry_price - current_price) * abs(net)
-                
+
                 logger.warning(f"API未實現盈虧為0，手動計算: {calculated_pnl:.4f}")
                 unrealized = calculated_pnl
 
@@ -352,8 +357,8 @@ class PerpetualMarketMaker(MarketMaker):
 
         # 記錄檢查狀態
         logger.info(f"止損止盈檢查: 淨倉位={net:.3f}, 未實現盈虧={unrealized:.4f}, "
-                f"止損={-self.stop_loss if self.stop_loss else 'N/A'}, "
-                f"止盈={self.take_profit if self.take_profit else 'N/A'}")
+                    f"止損={-self.stop_loss if self.stop_loss else 'N/A'}, "
+                    f"止盈={self.take_profit if self.take_profit else 'N/A'}")
 
         if not trigger_label:
             return False
@@ -365,7 +370,10 @@ class PerpetualMarketMaker(MarketMaker):
         # 執行緊急平倉
         try:
             logger.info("執行緊急平倉...")
-            self.cancel_existing_orders()
+            # (新) 調用父類的 cancel_existing_orders()，
+            # 它现在是非智能的、强制取消所有订单
+            super().cancel_existing_orders()
+
             close_success = self.close_position(order_type="Market")
 
             if close_success:
@@ -389,14 +397,14 @@ class PerpetualMarketMaker(MarketMaker):
     # 下單相關 (此處函數未變動)
     # ------------------------------------------------------------------
     def open_position(
-        self,
-        side: str,
-        quantity: float,
-        price: Optional[float] = None,
-        order_type: str = "Limit",
-        reduce_only: bool = False,
-        time_in_force: str = "GTC",
-        client_id: Optional[str] = None,
+            self,
+            side: str,
+            quantity: float,
+            price: Optional[float] = None,
+            order_type: str = "Limit",
+            reduce_only: bool = False,
+            time_in_force: str = "GTC",
+            client_id: Optional[str] = None,
     ) -> Dict:
         """提交開倉或平倉訂單。"""
 
@@ -461,12 +469,12 @@ class PerpetualMarketMaker(MarketMaker):
         return result
 
     def open_long(
-        self,
-        quantity: float,
-        price: Optional[float] = None,
-        order_type: str = "Limit",
-        reduce_only: bool = False,
-        **kwargs,
+            self,
+            quantity: float,
+            price: Optional[float] = None,
+            order_type: str = "Limit",
+            reduce_only: bool = False,
+            **kwargs,
     ) -> Dict:
         """開啟或增加多頭倉位。"""
         return self.open_position(
@@ -479,12 +487,12 @@ class PerpetualMarketMaker(MarketMaker):
         )
 
     def open_short(
-        self,
-        quantity: float,
-        price: Optional[float] = None,
-        order_type: str = "Limit",
-        reduce_only: bool = False,
-        **kwargs,
+            self,
+            quantity: float,
+            price: Optional[float] = None,
+            order_type: str = "Limit",
+            reduce_only: bool = False,
+            **kwargs,
     ) -> Dict:
         """開啟或增加空頭倉位。"""
         return self.open_position(
@@ -497,12 +505,12 @@ class PerpetualMarketMaker(MarketMaker):
         )
 
     def close_position(
-        self,
-        quantity: Optional[float] = None,
-        price: Optional[float] = None,
-        order_type: str = "Market",
-        side: Optional[str] = None,
-        client_id: Optional[str] = None,
+            self,
+            quantity: Optional[float] = None,
+            price: Optional[float] = None,
+            order_type: str = "Market",
+            side: Optional[str] = None,
+            client_id: Optional[str] = None,
     ) -> bool:
         """平倉操作。"""
         net = self.get_net_position()  # 使用API獲取實際倉位
@@ -648,15 +656,27 @@ class PerpetualMarketMaker(MarketMaker):
     # 報價調整 (核心修改)
     # ------------------------------------------------------------------
     def calculate_prices(self):  # type: ignore[override]
-        """計算買賣訂單價格，並根據淨倉位進行偏移以控制方向風險。"""
-        buy_prices, sell_prices = super().calculate_prices()
-        if not buy_prices or not sell_prices:
-            return buy_prices, sell_prices
+        """
+        (新) 合併功能 3: 波動率自適應價差
+        計算買賣訂單價格，並根據淨倉位進行偏移以控制方向風險。
+        """
+        # --- 1. (新) 調用父類的 calculate_prices ---
+        # 這一步会获取中间价, 应用波动率价差, 并将其存储在 self.last_calculated_mid_price
+        try:
+            base_buy_prices, base_sell_prices = super().calculate_prices()
+        except Exception as e:
+            logger.error(f"從基類 MarketMaker 獲取波動率調整價格時出錯: {e}")
+            return None, None
 
+        if not base_buy_prices or not base_sell_prices:
+            return base_buy_prices, base_sell_prices
+
+        # --- 2. 獲取永續合約的特定狀態 (倉位) ---
         net = self.get_net_position()
-        current_price = self.get_current_price()
-        
-        # 獲取盤口信息
+        # (新) 使用父类存储的价格，而不是重新获取
+        current_price = self.last_calculated_mid_price
+
+        # 獲取盤口信息 (用於日誌)
         orderbook = self.client.get_order_book(self.symbol)
         best_bid = best_ask = None
         if orderbook and 'bids' in orderbook and 'asks' in orderbook:
@@ -664,61 +684,66 @@ class PerpetualMarketMaker(MarketMaker):
                 best_bid = float(orderbook['bids'][0][0])
             if orderbook['asks']:
                 best_ask = float(orderbook['asks'][0][0])
-        
+
         # 輸出盤口和持倉信息
-        logger.info("=== 市場狀態 ===")
-        if best_bid and best_ask:
+        logger.info("=== 市場狀態 (永續) ===")
+        if best_bid and best_ask and current_price:
             spread = best_ask - best_bid
             spread_pct = (spread / current_price * 100) if current_price else 0
             logger.info(f"盤口: Bid {best_bid:.3f} | Ask {best_ask:.3f} | 價差 {spread:.3f} ({spread_pct:.3f}%)")
         if current_price:
             logger.info(f"中間價: {current_price:.3f}")
-        
+
         # 輸出持倉信息
         direction = "空頭" if net < 0 else "多頭" if net > 0 else "無倉位"
-        logger.info(f"持倉: {direction} {abs(net):.3f} SOL | 目標: {self.target_position:.1f} | 上限: {self.max_position:.1f}")
+        logger.info(
+            f"持倉: {direction} {abs(net):.3f} SOL | 目標: {self.target_position:.1f} | 上限: {self.max_position:.1f}")
 
+        # --- 3. 應用庫存偏移 (Inventory Skew) ---
         # 如果沒有庫存偏移係數或沒有倉位，則不進行調整
         if self.inventory_skew <= 0 or abs(net) < self.min_order_size:
-            logger.info(f"原始掛單: 買 {buy_prices[0]:.3f} | 賣 {sell_prices[0]:.3f} (無偏移)")
-            return buy_prices, sell_prices
+            logger.info(
+                f"原始掛單 (已應用波動率): 買 {base_buy_prices[0]:.3f} | 賣 {base_sell_prices[0]:.3f} (無庫存偏移)")
+            return base_buy_prices, base_sell_prices
 
         if self.max_position <= 0:
-            return buy_prices, sell_prices
+            return base_buy_prices, base_sell_prices
 
         # 核心偏移邏輯：根據淨倉位(net)調整報價，目標是將淨倉位推向0 (Delta中性)
-        # 偏離量就是淨倉位本身
         deviation = net
-        skew_ratio = max(-1.0, min(1.0, deviation / self.max_position))
+        # 修正：确保 skew_ratio 的分母不为0
+        if self.max_position == 0:
+            skew_ratio = 0.0
+        else:
+            skew_ratio = max(-1.0, min(1.0, deviation / self.max_position))
 
         if not current_price:
-            return buy_prices, sell_prices
+            return base_buy_prices, base_sell_prices
 
         # 如果是多頭 (net > 0)，skew_offset為正；如果是空頭 (net < 0)，skew_offset為負
         skew_offset = current_price * self.inventory_skew * skew_ratio
 
         # 調整價格以鼓勵反向交易，使淨倉位回歸0
-        # 如果是多頭 (net > 0)，降低買賣價以鼓勵市場吃掉我們的賣單，同時降低我們買入的意願
-        # 如果是空頭 (net < 0)，提高買賣價以鼓勵市場吃掉我們的買單，同時降低我們賣出的意願
         adjusted_buys = [
             round_to_tick_size(price - skew_offset, self.tick_size)
-            for price in buy_prices
+            for price in base_buy_prices
         ]
         adjusted_sells = [
             round_to_tick_size(price - skew_offset, self.tick_size)
-            for price in sell_prices
+            for price in base_sell_prices
         ]
 
         # 輸出價格調整詳情
-        logger.info("=== 價格計算 ===")
-        logger.info(f"原始掛單: 買 {buy_prices[0]:.3f} | 賣 {sell_prices[0]:.3f}")
-        logger.info(f"偏移計算: 淨持倉 {net:.3f} | 偏移係數 {self.inventory_skew:.2f} | 偏移量 {skew_offset:.4f}")
-        logger.info(f"調整後掛單: 買 {adjusted_buys[0]:.3f} | 賣 {adjusted_sells[0]:.3f}")
+        logger.info("=== 價格計算 (永續) ===")
+        logger.info(f"波動率調整後: 買 {base_buy_prices[0]:.3f} | 賣 {base_sell_prices[0]:.3f}")
+        logger.info(f"庫存偏移計算: 淨持倉 {net:.3f} | 偏移係數 {self.inventory_skew:.2f} | 偏移量 {skew_offset:.4f}")
+        logger.info(f"最終調整掛單: 買 {adjusted_buys[0]:.3f} | 賣 {adjusted_sells[0]:.3f}")
 
         # 風控：確保調整後買賣價沒有交叉
         if adjusted_buys[0] >= adjusted_sells[0]:
-            logger.warning("報價調整後買賣價交叉或價差過小，恢復原始報價。買: %s, 賣: %s", adjusted_buys[0], adjusted_sells[0])
-            return buy_prices, sell_prices
+            logger.warning("報價調整後買賣價交叉或價差過小，恢復原始(波動率)報價。買: %s, 賣: %s", adjusted_buys[0],
+                           adjusted_sells[0])
+            return base_buy_prices, base_sell_prices
 
         return adjusted_buys, adjusted_sells
 

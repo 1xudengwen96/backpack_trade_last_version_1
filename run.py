@@ -34,14 +34,19 @@ def parse_arguments():
     parser.add_argument('--duration', type=int, default=3600, help='運行時間（秒）(默認: 3600)')
     parser.add_argument('--interval', type=int, default=60, help='更新間隔（秒）(默認: 60)')
     parser.add_argument('--market-type', choices=['spot', 'perp'], default='spot', help='市場類型 (spot 或 perp)')
+    parser.add_argument('--strategy', choices=['standard', 'maker_hedge'], default='standard',
+                        help='策略選擇 (standard 或 maker_hedge)')
+
+    # 永续合约參數
     parser.add_argument('--target-position', type=float, default=1.0, help='永續合約目標持倉量 (絕對值, 例如: 1.0)')
     parser.add_argument('--max-position', type=float, default=1.0, help='永續合約最大允許倉位(絕對值)')
     parser.add_argument('--position-threshold', type=float, default=0.1, help='永續倉位調整觸發值')
     parser.add_argument('--inventory-skew', type=float, default=0.0, help='永續倉位偏移調整係數 (0-1)')
     parser.add_argument('--stop-loss', type=float, help='永續倉位止損觸發值 (以報價資產計價)')
     parser.add_argument('--take-profit', type=float, help='永續倉位止盈觸發值 (以報價資產計價)')
-    parser.add_argument('--strategy', choices=['standard', 'maker_hedge'], default='standard',
-                        help='策略選擇 (standard 或 maker_hedge)')
+
+    # (新) 智能策略參數
+    parser.add_argument('--stale-threshold', type=float, help='(智能策略) 過時訂單閾值 (百分比, 例如: 0.5)')
 
     # 數據庫選項
     parser.add_argument('--enable-db', dest='enable_db', action='store_true', help='啟用資料庫寫入功能')
@@ -58,204 +63,275 @@ def parse_arguments():
 
 
 def validate_rebalance_args(args):
+    # ... existing code ...
     """驗證重平設置參數"""
     if getattr(args, 'market_type', 'spot') == 'perp':
         return
+    # ... existing code ...
     if args.enable_rebalance and args.disable_rebalance:
         logger.error("不能同時設置 --enable-rebalance 和 --disable-rebalance")
         sys.exit(1)
 
     if args.base_asset_target is not None:
+        # ... existing code ...
         if not 0 <= args.base_asset_target <= 100:
             logger.error("基礎資產目標比例必須在 0-100 之間")
             sys.exit(1)
 
     if args.rebalance_threshold is not None:
+        # ... existing code ...
         if args.rebalance_threshold <= 0:
             logger.error("重平觸發閾值必須大於 0")
             sys.exit(1)
 
 
 def main():
+    # ... existing code ...
     """主函數"""
     args = parse_arguments()
 
     # 驗證重平參數
+    # ... existing code ...
     validate_rebalance_args(args)
 
     # exchange = args.exchange # Removed
     exchange = 'backpack'  # Hardcoded
 
     api_key = os.getenv('BACKPACK_KEY')
+    # ... existing code ...
     secret_key = os.getenv('BACKPACK_SECRET')
     ws_proxy = os.getenv('BACKPACK_PROXY_WEBSOCKET')
     base_url = os.getenv('BASE_URL', 'https://api.backpack.work')
+    # ... existing code ...
     exchange_config = {
         'api_key': api_key,
         'secret_key': secret_key,
+        # ... existing code ...
         'base_url': base_url,
         'api_version': 'v1',
         'default_window': '5000'
     }
 
     # 檢查API密鑰
+    # ... existing code ...
     if not api_key or not secret_key:
         logger.error("缺少API密鑰，请通过命令行参数或环境变数提供")
         sys.exit(1)
 
     # 決定執行模式
+    # ... existing code ...
     if args.cli:
         # 啟動命令行界面
         try:
+            # ... existing code ...
             from cli.commands import main_cli
             main_cli(api_key, secret_key, ws_proxy=ws_proxy, enable_database=args.enable_db)
         except ImportError as e:
+            # ... existing code ...
             logger.error(f"啟動命令行界面時出錯: {str(e)}")
             sys.exit(1)
     elif args.symbol and args.spread is not None:
+        # ... existing code ...
         # 如果指定了交易對和价差，直接運行做市策略
         try:
             from strategies.market_maker import MarketMaker
+            # ... existing code ...
             from strategies.maker_taker_hedge import MakerTakerHedgeStrategy
             from strategies.perp_market_maker import PerpetualMarketMaker
 
             # 處理重平設置
+            # ... existing code ...
             market_type = args.market_type
+
+            # (新) 提取智能策略参数
+            stale_threshold = getattr(args, 'stale_threshold', None)
 
             strategy_name = args.strategy
             if market_type == 'perp':
+                # ... existing code ...
                 logger.info(f"啟動永續合約做市模式 (策略: {strategy_name}, 交易所: {exchange})")
                 logger.info(f"  目標持倉量: {abs(args.target_position)}")
+                # ... existing code ...
                 logger.info(f"  最大持倉量: {args.max_position}")
                 logger.info(f"  倉位觸發值: {args.position_threshold}")
                 logger.info(f"  報價偏移係數: {args.inventory_skew}")
+                if stale_threshold is not None:
+                    logger.info(f"  过时订单阈值: {stale_threshold}%")
 
                 if strategy_name == 'maker_hedge':
                     market_maker = MakerTakerHedgeStrategy(
+                        # ... existing code ...
                         api_key=api_key,
                         secret_key=secret_key,
                         symbol=args.symbol,
+                        # ... existing code ...
                         base_spread_percentage=args.spread,
                         order_quantity=args.quantity,
                         target_position=args.target_position,
+                        # ... existing code ...
                         max_position=args.max_position,
                         position_threshold=args.position_threshold,
                         inventory_skew=args.inventory_skew,
+                        # ... existing code ...
                         stop_loss=args.stop_loss,
                         take_profit=args.take_profit,
                         ws_proxy=ws_proxy,
                         # exchange=exchange, # Removed
                         # exchange_config=exchange_config, # Removed
                         enable_database=args.enable_db,
-                        market_type='perp'
+                        market_type='perp',
+                        # (新) 传递智能策略参数
+                        stale_threshold_percent=stale_threshold
                     )
                 else:
                     market_maker = PerpetualMarketMaker(
+                        # ... existing code ...
                         api_key=api_key,
                         secret_key=secret_key,
                         symbol=args.symbol,
+                        # ... existing code ...
                         base_spread_percentage=args.spread,
                         order_quantity=args.quantity,
                         max_orders=args.max_orders,
+                        # ... existing code ...
                         target_position=args.target_position,
                         max_position=args.max_position,
                         position_threshold=args.position_threshold,
+                        # ... existing code ...
                         inventory_skew=args.inventory_skew,
                         stop_loss=args.stop_loss,
                         take_profit=args.take_profit,
+                        # ... existing code ...
                         ws_proxy=ws_proxy,
                         # exchange=exchange, # Removed
                         # exchange_config=exchange_config, # Removed
-                        enable_database=args.enable_db
+                        enable_database=args.enable_db,
+                        # (新) 传递智能策略参数
+                        stale_threshold_percent=stale_threshold
                     )
 
                 if args.stop_loss is not None:
+                    # ... existing code ...
                     logger.info(f"  止損閾值: {args.stop_loss} {market_maker.quote_asset}")
                 if args.take_profit is not None:
                     logger.info(f"  止盈閾值: {args.take_profit} {market_maker.quote_asset}")
+            # ... existing code ...
             else:
                 if strategy_name == 'maker_hedge':
                     logger.info("啟動 Maker-Taker 對沖現貨模式")
+                    if stale_threshold is not None:
+                        logger.info(f"  过时订单阈值: {stale_threshold}%")
                     market_maker = MakerTakerHedgeStrategy(
                         api_key=api_key,
+                        # ... existing code ...
                         secret_key=secret_key,
                         symbol=args.symbol,
                         base_spread_percentage=args.spread,
+                        # ... existing code ...
                         order_quantity=args.quantity,
                         ws_proxy=ws_proxy,
                         # exchange=exchange, # Removed
                         # exchange_config=exchange_config, # Removed
                         enable_database=args.enable_db,
-                        market_type='spot'
+                        market_type='spot',
+                        # (新) 传递智能策略参数
+                        stale_threshold_percent=stale_threshold
                     )
                 else:
                     logger.info("啟動現貨做市模式")
+                    # ... existing code ...
                     enable_rebalance = True  # 默認開啟
                     base_asset_target_percentage = 30.0  # 默認30%
+                    # ... existing code ...
                     rebalance_threshold = 15.0  # 默認15%
 
                     if args.disable_rebalance:
                         enable_rebalance = False
+                    # ... existing code ...
                     elif args.enable_rebalance:
                         enable_rebalance = True
 
                     if args.base_asset_target is not None:
+                        # ... existing code ...
                         base_asset_target_percentage = args.base_asset_target
 
                     if args.rebalance_threshold is not None:
+                        # ... existing code ...
                         rebalance_threshold = args.rebalance_threshold
 
                     logger.info(f"重平設置:")
+                    # ... existing code ...
                     logger.info(f"  重平功能: {'開啟' if enable_rebalance else '關閉'}")
                     if enable_rebalance:
                         quote_asset_target_percentage = 100.0 - base_asset_target_percentage
+                        # ... existing code ...
                         logger.info(
                             f"  目標比例: {base_asset_target_percentage}% 基礎資產 / {quote_asset_target_percentage}% 報價資產")
                         logger.info(f"  觸發閾值: {rebalance_threshold}%")
 
+                    if stale_threshold is not None:
+                        logger.info(f"智能策略:")
+                        logger.info(f"  过时订单阈值: {stale_threshold}%")
+
                     market_maker = MarketMaker(
                         api_key=api_key,
+                        # ... existing code ...
                         secret_key=secret_key,
                         symbol=args.symbol,
                         base_spread_percentage=args.spread,
+                        # ... existing code ...
                         order_quantity=args.quantity,
                         max_orders=args.max_orders,
                         enable_rebalance=enable_rebalance,
+                        # ... existing code ...
                         base_asset_target_percentage=base_asset_target_percentage,
                         rebalance_threshold=rebalance_threshold,
                         ws_proxy=ws_proxy,
                         # exchange=exchange, # Removed
                         # exchange_config=exchange_config, # Removed
-                        enable_database=args.enable_db
+                        enable_database=args.enable_db,
+                        # (新) 传递智能策略参数
+                        stale_threshold_percent=stale_threshold
                     )
 
             # 執行做市策略
+            # ... existing code ...
             market_maker.run(duration_seconds=args.duration, interval_seconds=args.interval)
 
         except KeyboardInterrupt:
             logger.info("收到中斷信號，正在退出...")
+        # ... existing code ...
         except Exception as e:
             logger.error(f"做市過程中發生錯誤: {e}")
             import traceback
+            # ... existing code ...
             traceback.print_exc()
     else:
         # 沒有指定執行模式時顯示帮助
+        # ... existing code ...
         print("請指定執行模式：")
         print("  --cli     啟動命令行界面")
         print("  直接指定  --symbol 和 --spread 參數運行做市策略")
+        # ... existing code ...
         print("\n資料庫參數：")
         print("  --enable-db            啟用資料庫寫入")
         print("  --disable-db           停用資料庫寫入 (預設)")
+        # ... existing code ...
         print("\n重平設置參數：")
         print("  --enable-rebalance        開啟重平功能")
         print("  --disable-rebalance       關閉重平功能")
+        # ... existing code ...
         print("  --base-asset-target 30    設置基礎資產目標比例為30%")
         print("  --rebalance-threshold 15  設置重平觸發閾值為15%")
+        print("\n(新) 智能策略參數：")
+        print("  --stale-threshold 0.5     设置过时订单阈值为 0.5%")
         print("\n範例：")
         print(
+            # ... existing code ...
             "  python run.py --symbol SOL_USDC --spread 0.5 --enable-rebalance --base-asset-target 25 --rebalance-threshold 12")
         print(
             "  python run.py --symbol SOL_USDC --spread 0.5 --market-type perp --target-position 1.0 --max-position 2")
+        # ... existing code ...
         print("\n使用 --help 查看完整帮助")
 
 

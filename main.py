@@ -7,8 +7,10 @@ import os
 import sys  # 导入 sys
 import traceback
 from datetime import datetime
+import certifi  # (新) 导入 certifi
 
-
+# (新) 在程序启动时就设置 SSL 证书路径
+os.environ['SSL_CERT_FILE'] = certifi.where()
 # --- (新) 资源路径函数 ---
 # 这是一个关键函数，它帮助 .exe 文件找到被打包进去的资源
 def resource_path(relative_path):

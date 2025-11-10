@@ -16,6 +16,7 @@ from database.db import Database
 from utils.helpers import round_to_precision, round_to_tick_size, calculate_volatility
 from logger import setup_logger
 import traceback
+import math  # 引入 math 模块
 
 logger = setup_logger("market_maker")
 
@@ -50,7 +51,11 @@ class MarketMaker:
             ws_proxy=None,
             # exchange='backpack', # Removed
             exchange_config=None,
-            enable_database=False
+            enable_database=False,
+            # --- (新) 智能策略参数 ---
+            stale_threshold_percent: Optional[float] = None,
+            volatility_config: Optional[Dict[str, float]] = None,
+            depth_weights: Optional[List[float]] = None
     ):
         self.api_key = api_key
         self.secret_key = secret_key
@@ -70,6 +75,24 @@ class MarketMaker:
         self.enable_rebalance = enable_rebalance
         self.base_asset_target_percentage = base_asset_target_percentage
         self.quote_asset_target_percentage = 100.0 - base_asset_target_percentage
+
+        # --- (新) 初始化智能策略参数 ---
+        self.STALE_THRESHOLD_PERCENT = stale_threshold_percent if stale_threshold_percent is not None else 0.5
+        # 默认波动率配置
+        self.VOLATILITY_CONFIG = volatility_config or {
+            "extreme_vol_threshold": 1.5,
+            "extreme_vol_multiplier": 2.0,
+            "high_vol_threshold": 0.8,
+            "high_vol_multiplier": 1.2,
+            "low_vol_threshold": 0.2,
+            "low_vol_multiplier": 0.8,
+            "default_multiplier": 1.0
+        }
+        # 默认深度分配权重 (第一层量最大)
+        self.DEPTH_WEIGHTS = depth_weights or [1.5, 1.0, 0.5]
+
+        # (新) 用于在单次迭代中存储价格
+        self.last_calculated_mid_price: Optional[float] = None
 
         # 初始化數據庫
         self.db_enabled = bool(enable_database)
@@ -101,7 +124,7 @@ class MarketMaker:
         # 初始化市場限制
         self.market_limits = self.client.get_market_limits(symbol)
         if not self.market_limits:
-            raise ValueError(f"無法獲取 {symbol} 的市場限制")
+            raise ValueError(f"无法获取 {symbol} 的市场限制")
 
         self.base_asset = self.market_limits['base_asset']
         self.quote_asset = self.market_limits['quote_asset']
@@ -118,15 +141,15 @@ class MarketMaker:
         self.total_fees = 0
 
         # 關鍵：在任何可能出錯的代碼之前初始化這些屬性
-        # 跟蹤活躍訂單
+        # 跟蹤活躍訂單 (现在由 get_open_orders 实时获取)
         self.active_buy_orders = []
         self.active_sell_orders = []
 
-        # 記錄買賣數量以便重新平衡
+        # 记录买卖数量以便重新平衡
         self.total_bought = 0
         self.total_sold = 0
 
-        # 交易記錄 - 用於計算利潤
+        # 交易记录 - 用於計算利潤
         self.buy_trades = []
         self.sell_trades = []
 
@@ -148,7 +171,7 @@ class MarketMaker:
         self.ws.connect()
 
         # 執行緒池用於後台任務
-        self.executor = ThreadPoolExecutor(max_workers=3)
+        self.executor = ThreadPoolExecutor(max_workers=5)  # 增加worker数量以处理并发下单和取消
         self.is_running = True
 
         # Aster REST 成交流處理狀態 (Removed)
@@ -178,6 +201,11 @@ class MarketMaker:
             logger.info(
                 f"重平目標比例: {self.base_asset_target_percentage}% {self.base_asset} / {self.quote_asset_target_percentage}% {self.quote_asset}")
             logger.info(f"重平觸發閾值: {self.rebalance_threshold}%")
+
+        # (新) 记录智能策略参数
+        logger.info(f"过时订单阈值: {self.STALE_THRESHOLD_PERCENT}%")
+        logger.info(f"波动率配置: {self.VOLATILITY_CONFIG}")
+        logger.info(f"深度分配权重: {self.DEPTH_WEIGHTS}")
 
     def _db_available(self) -> bool:
         """檢查資料庫功能是否啟用且可用。"""
@@ -857,7 +885,7 @@ class MarketMaker:
             avg_spread = 0
             if self.ws and self.ws.bid_price and self.ws.ask_price:
                 avg_spread = (self.ws.ask_price - self.ws.bid_price) / (
-                            (self.ws.ask_price + self.ws.bid_price) / 2) * 100
+                        (self.ws.ask_price + self.ws.bid_price) / 2) * 100
 
             # 準備統計數據
             stats_data = {
@@ -993,10 +1021,15 @@ class MarketMaker:
                 logger.error(f"獲取價格失敗: {ticker['error']}")
                 return None
 
-            if "lastPrice" not in ticker:
+            last_price_str = ticker.get("lastPrice")
+            if not last_price_str:
                 logger.error(f"獲取到的價格數據不完整: {ticker}")
                 return None
-            return float(ticker['lastPrice'])
+            try:
+                return float(last_price_str)
+            except (ValueError, TypeError):
+                logger.error(f"无法解析价格: {last_price_str}")
+                return None
         return price
 
     def get_market_depth(self):
@@ -1025,11 +1058,38 @@ class MarketMaker:
         return bid_price, ask_price
 
     def calculate_dynamic_spread(self):
-        """計算動態價差基於市場情況"""
+        """
+        (新功能 3: 波动率自适应价差)
+        計算動態价差基於市場情況
+        """
         base_spread = self.base_spread_percentage
+        multiplier = self.VOLATILITY_CONFIG["default_multiplier"]
 
-        # 返回基礎價差，不再進行動態計算
-        return base_spread
+        if not self.ws:
+            return base_spread  # 如果没有 WS，返回基础价差
+
+        try:
+            # 波动率是一个百分比，例如 0.8
+            volatility = self.ws.get_volatility()
+
+            cfg = self.VOLATILITY_CONFIG
+
+            if volatility > cfg["extreme_vol_threshold"]:
+                multiplier = cfg["extreme_vol_multiplier"]
+                logger.info(f"市场极度波动 (Vol: {volatility:.2f}%), 价差乘数: {multiplier}")
+            elif volatility > cfg["high_vol_threshold"]:
+                multiplier = cfg["high_vol_multiplier"]
+                logger.info(f"市场高波动 (Vol: {volatility:.2f}%), 价差乘数: {multiplier}")
+            elif volatility < cfg["low_vol_threshold"]:
+                multiplier = cfg["low_vol_multiplier"]
+                logger.info(f"市场低波动 (Vol: {volatility:.2f}%), 价差乘数: {multiplier}")
+
+            current_spread_percentage = base_spread * multiplier
+            return current_spread_percentage
+
+        except Exception as e:
+            logger.warning(f"计算波动率价差时出错: {e}, 将使用基础价差")
+            return base_spread
 
     def calculate_prices(self):
         """計算買賣訂單價格"""
@@ -1044,10 +1104,17 @@ class MarketMaker:
             else:
                 mid_price = (bid_price + ask_price) / 2
 
+            if mid_price <= 0:
+                logger.error(f"获取到的中间价无效: {mid_price}")
+                return None, None
+
             logger.info(f"市場中間價: {mid_price}")
 
-            # 使用基礎價差
-            spread_percentage = self.base_spread_percentage
+            # (新) 存储此次迭代使用的价格
+            self.last_calculated_mid_price = mid_price
+
+            # (新功能 3: 波动率自适应价差)
+            spread_percentage = self.calculate_dynamic_spread()
             exact_spread = mid_price * (spread_percentage / 100)
 
             base_buy_price = mid_price - (exact_spread / 2)
@@ -1057,8 +1124,16 @@ class MarketMaker:
             base_sell_price = round_to_tick_size(base_sell_price, self.tick_size)
 
             actual_spread = base_sell_price - base_buy_price
-            actual_spread_pct = (actual_spread / mid_price) * 100
-            logger.info(f"使用的價差: {actual_spread_pct:.4f}% (目標: {spread_percentage}%), 絕對價差: {actual_spread}")
+            if actual_spread < self.tick_size:
+                logger.warning(f"计算出的价差 {actual_spread} 小于最小价格步长 {self.tick_size}。")
+                # 强制拉开到最小步长
+                base_buy_price = round_to_tick_size(mid_price - self.tick_size, self.tick_size)
+                base_sell_price = round_to_tick_size(mid_price + self.tick_size, self.tick_size)
+                actual_spread = base_sell_price - base_buy_price
+
+            actual_spread_pct = (actual_spread / mid_price) * 100 if mid_price > 0 else 0
+            logger.info(
+                f"使用的价差: {actual_spread_pct:.4f}% (目标: {spread_percentage:.4f}%), 绝对价差: {actual_spread}")
 
             # 計算梯度訂單價格
             buy_prices = []
@@ -1081,7 +1156,7 @@ class MarketMaker:
             final_spread = sell_prices[0] - buy_prices[0]
             final_spread_pct = (final_spread / mid_price) * 100
             logger.info(
-                f"最終價差: {final_spread_pct:.4f}% (最低賣價 {sell_prices[0]} - 最高買價 {buy_prices[0]} = {final_spread})")
+                f"最终价差: {final_spread_pct:.4f}% (最低卖价 {sell_prices[0]} - 最高买价 {buy_prices[0]} = {final_spread})")
 
             return buy_prices, sell_prices
 
@@ -1321,142 +1396,279 @@ class MarketMaker:
             logger.info(f"已經訂閲了訂單更新: {stream}")
             return True
 
-    def place_limit_orders(self):
-        """下限價單（使用總餘額包含抵押品）"""
-        self.check_ws_connection()
-        self.cancel_existing_orders()
-
-        buy_prices, sell_prices = self.calculate_prices()
-        if buy_prices is None or sell_prices is None:
-            logger.error("無法計算訂單價格，跳過下單")
-            return
-
-        # 處理訂單數量
+    def _calculate_order_quantities(self) -> Tuple[float, float]:
+        """
+        (新功能 4: 深度分配的辅助函数)
+        计算基础订单数量
+        """
         if self.order_quantity is None:
-            # 獲取總可用餘額（包含抵押品）
+            # 获获取总可用余额（包含抵押品）
             base_available, base_total = self.get_asset_balance(self.base_asset)
             quote_available, quote_total = self.get_asset_balance(self.quote_asset)
 
             logger.info(
                 f"當前總餘額: {format_balance(base_total)} {self.base_asset}, {format_balance(quote_total)} {self.quote_asset}")
-            logger.info(
-                f"當前可用餘額: {format_balance(base_available)} {self.base_asset}, {format_balance(quote_available)} {self.quote_asset}")
 
-            # 如果可用餘額很少但總餘額充足，説明資金在抵押品中
-            if base_available < base_total * 0.1:
-                logger.info(f"基礎資產主要在抵押品中，將依靠自動贖回功能")
-            if quote_available < quote_total * 0.1:
-                logger.info(f"報價資產主要在抵押品中，將依靠自動贖回功能")
+            # 计算每个订单的平均价格（使用当前价格作为估算）
+            current_price = self.get_current_price()
+            if not current_price:
+                logger.error("无法获取当前价格，无法计算自动订单数量")
+                return self.min_order_size, self.min_order_size
 
-            # 計算每個訂單的數量
-            avg_price = sum(buy_prices) / len(buy_prices)
+            # 使用更保守的分配比例，避免资金用尽
+            # 每层订单使用总资金的 5% / max_orders
+            allocation_percent_per_order = 0.05 / self.max_orders
 
-            # 使用更保守的分配比例，避免資金用盡
-            allocation_percent = min(0.05, 1.0 / (self.max_orders * 4))  # 最多使用總資金的25%
-
-            # 基於總餘額計算，而不是可用餘額
-            quote_amount_per_side = quote_total * allocation_percent
-            base_amount_per_side = base_total * allocation_percent
+            # 基於總餘額计算
+            quote_amount_per_order = quote_total * allocation_percent_per_order
+            base_amount_per_order = base_total * allocation_percent_per_order
 
             buy_quantity = max(self.min_order_size,
-                               round_to_precision(quote_amount_per_side / avg_price, self.base_precision))
-            sell_quantity = max(self.min_order_size, round_to_precision(base_amount_per_side, self.base_precision))
+                               round_to_precision(quote_amount_per_order / current_price, self.base_precision))
+            sell_quantity = max(self.min_order_size,
+                                round_to_precision(base_amount_per_order, self.base_precision))
 
             logger.info(
-                f"計算訂單數量: 買單 {format_balance(buy_quantity)} {self.base_asset}, 賣單 {format_balance(sell_quantity)} {self.base_asset}")
+                f"计算基础订单数量: 买单 {format_balance(buy_quantity)} {self.base_asset}, 卖单 {format_balance(sell_quantity)} {self.base_asset}")
+            return buy_quantity, sell_quantity
         else:
             buy_quantity = max(self.min_order_size, round_to_precision(self.order_quantity, self.base_precision))
             sell_quantity = max(self.min_order_size, round_to_precision(self.order_quantity, self.base_precision))
+            return buy_quantity, sell_quantity
 
-        # 下買單 (併發處理)
-        buy_futures = []
+    def place_limit_orders(self):
+        """
+        (新) 智能订单管理 (功能 1, 2, 4)
+        重写下单逻辑，实现评估-取消-补充的智能框架
+        """
+        self.check_ws_connection()
 
-        def place_buy(price, qty):
-            order = {
-                "orderType": "Limit",
-                "price": str(price),
-                "quantity": str(qty),
-                "side": "Bid",
-                "symbol": self.symbol,
-                "timeInForce": "GTC",
-                "postOnly": True,
-                "autoLendRedeem": True,
-                "autoLend": True
-            }
-            res = self.client.execute_order(order)
-            if isinstance(res, dict) and "error" in res and "POST_ONLY_TAKER" in str(res["error"]):
-                logger.info("調整買單價格並重試...")
-                order["price"] = str(round_to_tick_size(float(order["price"]) - self.tick_size, self.tick_size))
+        # --- 1. 计算理想状态 ---
+        ideal_buy_prices, ideal_sell_prices = self.calculate_prices()
+        if ideal_buy_prices is None or ideal_sell_prices is None:
+            logger.error("无法计算理想价格，跳过本轮订单管理")
+            return
+
+        ideal_buy_set = set(ideal_buy_prices)
+        ideal_sell_set = set(ideal_sell_prices)
+
+        # --- 2. 获取当前状态 ---
+        try:
+            open_orders = self.client.get_open_orders(self.symbol)
+            if isinstance(open_orders, dict) and "error" in open_orders:
+                logger.error(f"无法获取当前订单: {open_orders['error']}，跳过本轮订单管理")
+                return
+        except Exception as e:
+            logger.error(f"获取当前订单时发生异常: {e}，跳过本轮订单管理")
+            return
+
+        # (新) 使用 calculate_prices 中存储的价格，而不是重新获取
+        current_mid_price = self.last_calculated_mid_price
+
+        if not current_mid_price:
+            logger.error("无法获取上次计算的中间价，跳过本轮订单管理 (无法检测过时订单)")
+            return
+
+        # --- 3. 评估与比较 (功能 1: 容忍度 & 功能 2: 过时检测) ---
+        orders_to_cancel: List[str] = []
+        kept_buy_orders: Dict[float, str] = {}  # {price: order_id}
+        kept_sell_orders: Dict[float, str] = {}  # {price: order_id}
+
+        stale_threshold_abs = current_mid_price * (self.STALE_THRESHOLD_PERCENT / 100)
+
+        logger.info(f"智能订单管理: 中间价 {current_mid_price:.4f}, 过时阈值(绝对) {stale_threshold_abs:.4f}")
+        logger.info(f"理想买单价位: {ideal_buy_prices}")
+        logger.info(f"理想卖单价位: {ideal_sell_prices}")
+
+        for order in open_orders:
+            try:
+                order_id = order.get('id')
+                if not order_id:
+                    continue
+
+                order_price = float(order.get('price', 0))
+                order_side = order.get('side')
+
+                # 功能 2: 过时订单检测 (风控优先)
+                is_stale = abs(order_price - current_mid_price) > stale_threshold_abs
+
+                if is_stale:
+                    logger.warning(
+                        f"[风控] 检测到过时订单 (价格 {order_price} vs 中间价 {current_mid_price:.4f})，标记为取消: {order_id}")
+                    orders_to_cancel.append(order_id)
+                    continue
+
+                # 功能 1: 价格容忍度
+                if order_side == 'Bid':
+                    # 规则: 只要现有买单价格 <= 我们愿意出的最高理想买价 (ideal_buy_prices[0])，就保留
+                    is_tolerated = order_price <= ideal_buy_prices[0]
+                    if is_tolerated:
+                        # 检查是否精确匹配
+                        if order_price in ideal_buy_set:
+                            logger.info(f"保留[精确匹配]买单: {order_price} (ID: {order_id})")
+                            kept_buy_orders[order_price] = order_id
+                        else:
+                            # 价格更好（更低），也保留
+                            logger.info(
+                                f"保留[价格容忍]买单: {order_price} (优于 {ideal_buy_prices[0]}) (ID: {order_id})")
+                            kept_buy_orders[order_price] = order_id  # 记录这个价格，防止重复下单
+                    else:
+                        logger.info(
+                            f"标记[不满足容忍度]买单: {order_price} (高于 {ideal_buy_prices[0]})，标记为取消: {order_id}")
+                        orders_to_cancel.append(order_id)
+
+                elif order_side == 'Ask':
+                    # 规则: 只要现有卖单价格 >= 我们愿意出的最低理想卖价 (ideal_sell_prices[0])，就保留
+                    is_tolerated = order_price >= ideal_sell_prices[0]
+                    if is_tolerated:
+                        if order_price in ideal_sell_set:
+                            logger.info(f"保留[精确匹配]卖单: {order_price} (ID: {order_id})")
+                            kept_sell_orders[order_price] = order_id
+                        else:
+                            # 价格更好（更高），也保留
+                            logger.info(
+                                f"保留[价格容忍]卖单: {order_price} (优于 {ideal_sell_prices[0]}) (ID: {order_id})")
+                            kept_sell_orders[order_price] = order_id
+                    else:
+                        logger.info(
+                            f"标记[不满足容忍度]卖单: {order_price} (低于 {ideal_sell_prices[0]})，标记为取消: {order_id}")
+                        orders_to_cancel.append(order_id)
+
+            except Exception as e:
+                logger.error(f"评估订单 {order.get('id')} 时出错: {e}")
+                if order.get('id'):
+                    orders_to_cancel.append(order.get('id'))
+
+        # --- 4. 取消订单 ---
+        if orders_to_cancel:
+            logger.info(f"将并发取消 {len(orders_to_cancel)} 个订单...")
+            cancel_futures = []
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                for order_id in orders_to_cancel:
+                    cancel_futures.append(executor.submit(self.client.cancel_order, order_id, self.symbol))
+
+            for future in cancel_futures:
+                try:
+                    res = future.result()
+                    if isinstance(res, dict) and "error" in res:
+                        logger.error(f"取消订单失败: {res['error']}")
+                    else:
+                        self.orders_cancelled += 1
+                except Exception as e:
+                    logger.error(f"取消订单时发生异常: {e}")
+            logger.info("订单取消完毕")
+
+        # --- 5. 补充新订单 (功能 4: 深度分配) ---
+        orders_to_place: List[Dict[str, Any]] = []
+
+        # 计算基础订单数量
+        base_buy_qty, base_sell_qty = self._calculate_order_quantities()
+        weights = self.DEPTH_WEIGHTS
+
+        # 补充买单
+        buy_orders_needed = self.max_orders - len(kept_buy_orders)
+        if buy_orders_needed > 0:
+            placed_count = 0
+            for i, price in enumerate(ideal_buy_prices):
+                if price not in kept_buy_orders:
+                    # 应用深度权重
+                    qty_multiplier = weights[i] if i < len(weights) else weights[-1]
+                    final_qty = round_to_precision(base_buy_qty * qty_multiplier, self.base_precision)
+
+                    if final_qty < self.min_order_size:
+                        logger.warning(f"买单计算数量 {final_qty} 低于最小订单 {self.min_order_size}，跳过")
+                        continue
+
+                    orders_to_place.append({
+                        "side": "Bid",
+                        "price": price,
+                        "quantity": final_qty
+                    })
+                    placed_count += 1
+                    if placed_count >= buy_orders_needed:
+                        break  # 已经补足了需要的订单数量
+
+        # 补充卖单
+        sell_orders_needed = self.max_orders - len(kept_sell_orders)
+        if sell_orders_needed > 0:
+            placed_count = 0
+            for i, price in enumerate(ideal_sell_prices):
+                if price not in kept_sell_orders:
+                    # 应用深度权重
+                    qty_multiplier = weights[i] if i < len(weights) else weights[-1]
+                    final_qty = round_to_precision(base_sell_qty * qty_multiplier, self.base_precision)
+
+                    if final_qty < self.min_order_size:
+                        logger.warning(f"卖单计算数量 {final_qty} 低于最小订单 {self.min_order_size}，跳过")
+                        continue
+
+                    orders_to_place.append({
+                        "side": "Ask",
+                        "price": price,
+                        "quantity": final_qty
+                    })
+                    placed_count += 1
+                    if placed_count >= sell_orders_needed:
+                        break  # 已经补足了需要的订单数量
+
+        # --- 6. 执行下单 ---
+        if orders_to_place:
+            logger.info(f"将并发补充 {len(orders_to_place)} 个新订单...")
+            place_futures = []
+
+            def _place_order_task(order_params):
+                order = {
+                    "orderType": "Limit",
+                    "price": str(order_params["price"]),
+                    "quantity": str(order_params["quantity"]),
+                    "side": order_params["side"],
+                    "symbol": self.symbol,
+                    "timeInForce": "GTC",
+                    "postOnly": True,
+                    "autoLendRedeem": True,
+                    "autoLend": True
+                }
                 res = self.client.execute_order(order)
 
-            # 特殊處理資金不足錯誤
-            if isinstance(res, dict) and "error" in res and "INSUFFICIENT_FUNDS" in str(res["error"]):
-                logger.warning(f"買單資金不足，可能需要手動贖回抵押品或等待自動贖回生效")
+                # Post-Only 失败重试逻辑
+                if isinstance(res, dict) and "error" in res and "POST_ONLY_TAKER" in str(res["error"]):
+                    logger.info(f"Post-Only 失败 ({order['side']} @ {order['price']})，调整价格后重试...")
+                    new_price = float(order["price"])
+                    if order['side'] == 'Bid':
+                        new_price -= self.tick_size
+                    else:
+                        new_price += self.tick_size
+                    order["price"] = str(round_to_tick_size(new_price, self.tick_size))
+                    res = self.client.execute_order(order)
 
-            return qty, order["price"], res
+                # 资金不足警告
+                if isinstance(res, dict) and "error" in res and "INSUFFICIENT_FUNDS" in str(res["error"]):
+                    logger.warning(f"{order['side']} 单资金不足，可能需要手动赎回抵押品或等待自动赎回生效")
 
-        with ThreadPoolExecutor(max_workers=self.max_orders) as executor:
-            for p in buy_prices:
-                if len(buy_futures) >= self.max_orders:
-                    break
-                buy_futures.append(executor.submit(place_buy, p, buy_quantity))
+                return res, order_params
 
-        buy_order_count = 0
-        for future in buy_futures:
-            qty, p_used, res = future.result()
-            if isinstance(res, dict) and "error" in res:
-                logger.error(f"買單失敗: {res['error']}")
-            else:
-                logger.info(f"買單成功: 價格 {p_used}, 數量 {qty}")
-                self.active_buy_orders.append(res)
-                self.orders_placed += 1
-                buy_order_count += 1
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                for params in orders_to_place:
+                    place_futures.append(executor.submit(_place_order_task, params))
 
-        # 下賣單
-        sell_futures = []
+            for future in place_futures:
+                try:
+                    res, params = future.result()
+                    if isinstance(res, dict) and "error" in res:
+                        logger.error(f"补充 {params['side']} 单 @ {params['price']} 失败: {res['error']}")
+                    else:
+                        logger.info(f"补充 {params['side']} 单 @ {params['price']} 成功 (数量: {params['quantity']})")
+                        self.orders_placed += 1
+                except Exception as e:
+                    logger.error(f"补充订单时发生异常: {e}")
+        else:
+            logger.info("无需补充新订单，所有价位均已满足。")
 
-        def place_sell(price, qty):
-            order = {
-                "orderType": "Limit",
-                "price": str(price),
-                "quantity": str(qty),
-                "side": "Ask",
-                "symbol": self.symbol,
-                "timeInForce": "GTC",
-                "postOnly": True,
-                "autoLendRedeem": True,
-                "autoLend": True
-            }
-            res = self.client.execute_order(order)
-            if isinstance(res, dict) and "error" in res and "POST_ONLY_TAKER" in str(res["error"]):
-                logger.info("調整賣單價格並重試...")
-                order["price"] = str(round_to_tick_size(float(order["price"]) + self.tick_size, self.tick_size))
-                res = self.client.execute_order(order)
-
-            # 特殊處理資金不足錯誤
-            if isinstance(res, dict) and "error" in res and "INSUFFICIENT_FUNDS" in str(res["error"]):
-                logger.warning(f"賣單資金不足，可能需要手動贖回抵押品或等待自動贖回生效")
-
-            return qty, order["price"], res
-
-        with ThreadPoolExecutor(max_workers=self.max_orders) as executor:
-            for p in sell_prices:
-                if len(sell_futures) >= self.max_orders:
-                    break
-                sell_futures.append(executor.submit(place_sell, p, sell_quantity))
-
-        sell_order_count = 0
-        for future in sell_futures:
-            qty, p_used, res = future.result()
-            if isinstance(res, dict) and "error" in res:
-                logger.error(f"賣單失敗: {res['error']}")
-            else:
-                logger.info(f"賣單成功: 價格 {p_used}, 數量 {qty}")
-                self.active_sell_orders.append(res)
-                self.orders_placed += 1
-                sell_order_count += 1
-
-        logger.info(f"共下單: {buy_order_count} 個買單, {sell_order_count} 個賣單")
+        # 更新活跃订单的内存记录 (虽然我们每次都重新获取，但为了统计准确先更新)
+        self.active_buy_orders = list(kept_buy_orders.values())
+        self.active_sell_orders = list(kept_sell_orders.values())
+        logger.info(
+            f"订单管理完成。当前保留买单: {len(self.active_buy_orders)}, 保留卖单: {len(self.active_sell_orders)}")
 
     def cancel_existing_orders(self):
         """取消所有現有訂單"""
@@ -1518,81 +1730,26 @@ class MarketMaker:
         except Exception as e:
             logger.error(f"取消訂單過程中發生錯誤: {str(e)}")
 
-        # 等待一下確保訂單已取消
-        time.sleep(1)
-
-        # 檢查是否還有未取消的訂單
-        remaining_orders = self.client.get_open_orders(self.symbol)
-        if remaining_orders and len(remaining_orders) > 0:
-            logger.warning(f"警告: 仍有 {len(remaining_orders)} 個未取消的訂單")
-        else:
-            logger.info("所有訂單已成功取消")
+        # (新逻辑中不再需要sleep和检查)
 
         # 重置活躍訂單列表
         self.active_buy_orders = []
         self.active_sell_orders = []
 
     def check_order_fills(self):
-        """檢查訂單成交情況"""
-        open_orders = self.client.get_open_orders(self.symbol)
+        """
+        檢查訂單成交情況
+        (注意: 此函数现在主要用于日志记录，
+        因为智能订单管理依赖于实时的 get_open_orders，
+        而成交处理依赖于 WebSocket 的 on_ws_message)
+        """
+        # self.check_ws_connection() # 确保WS是连接的
+        # WS的 on_ws_message 会自动处理成交
+        # place_limit_orders 中的 get_open_orders 会处理订单状态
 
-        if isinstance(open_orders, dict) and "error" in open_orders:
-            logger.error(f"獲取訂單失敗: {open_orders['error']}")
-            return
-
-        # 獲取當前所有訂單ID
-        current_order_ids = set()
-        if open_orders:
-            for order in open_orders:
-                order_id = order.get('id')
-                if order_id:
-                    current_order_ids.add(order_id)
-
-        # 記錄更新前的訂單數量
-        prev_buy_orders = len(self.active_buy_orders)
-        prev_sell_orders = len(self.active_sell_orders)
-
-        # 更新活躍訂單列表
-        active_buy_orders = []
-        active_sell_orders = []
-
-        if open_orders:
-            for order in open_orders:
-                if order.get('side') == 'Bid':
-                    active_buy_orders.append(order)
-                elif order.get('side') == 'Ask':
-                    active_sell_orders.append(order)
-
-        # 檢查買單成交
-        filled_buy_orders = []
-        for order in self.active_buy_orders:
-            order_id = order.get('id')
-            if order_id and order_id not in current_order_ids:
-                price = float(order.get('price', 0))
-                quantity = float(order.get('quantity', 0))
-                logger.info(f"買單已成交: {price} x {quantity}")
-                filled_buy_orders.append(order)
-
-        # 檢查賣單成交
-        filled_sell_orders = []
-        for order in self.active_sell_orders:
-            order_id = order.get('id')
-            if order_id and order_id not in current_order_ids:
-                price = float(order.get('price', 0))
-                quantity = float(order.get('quantity', 0))
-                logger.info(f"賣單已成交: {price} x {quantity}")
-                filled_sell_orders.append(order)
-
-        # 更新活躍訂單列表
-        self.active_buy_orders = active_buy_orders
-        self.active_sell_orders = active_sell_orders
-
-        # 輸出訂單數量變化，方便追蹤
-        if prev_buy_orders != len(active_buy_orders) or prev_sell_orders != len(active_sell_orders):
-            logger.info(
-                f"訂單數量變更: 買單 {prev_buy_orders} -> {len(active_buy_orders)}, 賣單 {prev_sell_orders} -> {len(active_sell_orders)}")
-
-        logger.info(f"當前活躍訂單: 買單 {len(self.active_buy_orders)} 個, 賣單 {len(self.active_sell_orders)} 個")
+        # 为了日志，我们可以保留一个简化的检查
+        logger.debug("通过 WebSocket 实时处理订单成交...")
+        pass  # 功能已移至 on_ws_message 和 place_limit_orders
 
     def estimate_profit(self, pnl_data=None):
         """輸出本次迭代的關鍵統計資訊。"""
@@ -1678,16 +1835,10 @@ class MarketMaker:
             )
         )
 
-        if self.active_buy_orders and self.active_sell_orders:
-            buy_price = float(self.active_buy_orders[0].get('price', 0))
-            sell_price = float(self.active_sell_orders[0].get('price', 0))
-            spread = sell_price - buy_price
-            spread_pct = (spread / buy_price * 100) if buy_price > 0 else 0
-            order_line = f"買 {buy_price:.3f} | 賣 {sell_price:.3f} | 價差 {spread:.3f} ({spread_pct:.3f}%)"
-        else:
-            active_buy_count = len(self.active_buy_orders)
-            active_sell_count = len(self.active_sell_orders)
-            order_line = f"買單 {active_buy_count} | 賣單 {active_sell_count}"
+        # (新) 从内存中读取活跃订单
+        active_buy_count = len(self.active_buy_orders)
+        active_sell_count = len(self.active_sell_orders)
+        order_line = f"买单 {active_buy_count} | 卖单 {active_sell_count}"
 
         sections.append(
             (
@@ -1924,21 +2075,28 @@ class MarketMaker:
 
     def _ensure_data_streams(self):
         """確保所有必要的數據流訂閲都是活躍的"""
-        # 檢查深度流訂閲
-        if "depth" not in self.ws.subscriptions:
-            logger.info("重新訂閲深度數據流...")
-            self.ws.initialize_orderbook()  # 重新初始化訂單簿
-            self.ws.subscribe_depth()
+        if not self.ws or not self.ws.is_connected():
+            logger.warning("WebSocket 未连接，无法确保数据流")
+            return
 
-        # 檢查行情數據訂閲
-        if "bookTicker" not in self.ws.subscriptions:
-            logger.info("重新訂閲行情數據...")
-            self.ws.subscribe_bookTicker()
+        try:
+            # 檢查深度流訂閲
+            if "depth" not in self.ws.subscriptions:
+                logger.info("重新訂閲深度數據流...")
+                self.ws.initialize_orderbook()  # 重新初始化訂單簿
+                self.ws.subscribe_depth()
 
-        # 檢查私有訂單更新流
-        if f"account.orderUpdate.{self.symbol}" not in self.ws.subscriptions:
-            logger.info("重新訂閲私有訂單更新流...")
-            self.subscribe_order_updates()
+            # 檢查行情數據訂閲
+            if "bookTicker" not in self.ws.subscriptions:
+                logger.info("重新訂閲行情數據...")
+                self.ws.subscribe_bookTicker()
+
+            # 檢查私有訂單更新流
+            if f"account.orderUpdate.{self.symbol}" not in self.ws.subscriptions:
+                logger.info("重新訂閲私有訂單更新流...")
+                self.subscribe_order_updates()
+        except Exception as e:
+            logger.error(f"确保数据流时出错: {e}")
 
     def check_stop_conditions(self, realized_pnl, unrealized_pnl, session_realized_pnl) -> bool:
         """檢查是否觸發提前停止條件。
@@ -1992,12 +2150,7 @@ class MarketMaker:
                     self.ws.initialize_orderbook()
 
                 # 檢查並確保所有數據流訂閲
-                if "depth" not in self.ws.subscriptions:
-                    self.ws.subscribe_depth()
-                if "bookTicker" not in self.ws.subscriptions:
-                    self.ws.subscribe_bookTicker()
-                if f"account.orderUpdate.{self.symbol}" not in self.ws.subscriptions:
-                    self.subscribe_order_updates()
+                self._ensure_data_streams()
 
             while self.is_running and (time.time() - start_time < duration_seconds):
                 iteration += 1
@@ -2008,13 +2161,14 @@ class MarketMaker:
                 # 檢查連接並在必要時重連
                 connection_status = self.check_ws_connection()
 
-                # 如果連接成功，檢查並確保所有流訂閲
+                # 如果連接成功，檢查並确保所有流订阅
                 if connection_status:
-                    # 重新訂閲必要的數據流
                     self._ensure_data_streams()
+                else:
+                    logger.warning("WebSocket 未连接，部分功能可能受限 (如自适应价差)")
 
-                # 檢查訂單成交情況
-                self.check_order_fills()
+                # (新逻辑) 依赖 WS 实时成交，不再需要 check_order_fills()
+                # self.check_order_fills()
 
                 # Aster 使用 REST API 同步最新成交 (Removed)
                 # if self.exchange == 'aster':
@@ -2024,7 +2178,7 @@ class MarketMaker:
                 if self.need_rebalance():
                     self.rebalance_position()
 
-                # 下限價單
+                # (新逻辑) 执行智能订单管理
                 self.place_limit_orders()
 
                 # 計算PnL並輸出簡化統計
@@ -2053,7 +2207,18 @@ class MarketMaker:
 
                 wait_time = interval_seconds
                 logger.info(f"等待 {wait_time} 秒後進行下一次迭代...")
-                time.sleep(wait_time)
+
+                # (新) 优化停止逻辑
+                start_wait = time.time()
+                while time.time() - start_wait < wait_time:
+                    if not self.is_running:
+                        logger.info("检测到停止信号，提前结束等待")
+                        break
+                    time.sleep(1) # 每秒检查一次停止信号
+
+                if not self.is_running:
+                    logger.info("捕获到停止信号，终止循环")
+                    break # 退出主循环
 
             # 結束運行時打印最終報表
             logger.info("\n=== 做市策略運行結束 ===")

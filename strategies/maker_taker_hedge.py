@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 from logger import setup_logger
 from strategies.market_maker import MarketMaker, format_balance
@@ -15,7 +15,16 @@ logger = setup_logger("maker_taker_hedge")
 class _MakerTakerHedgeMixin:
     """封裝 Maker 掛單 + Taker 對沖的核心實作。"""
 
-    def __init__(self, *args: Any, hedge_label: str = "現貨", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        hedge_label: str = "現貨",
+        # (新) 接收智能策略参数 (即使此策略不用)
+        stale_threshold_percent: float = 0.5,
+        volatility_config: Optional[Dict[str, float]] = None,
+        depth_weights: Optional[List[float]] = None,
+        **kwargs: Any
+    ) -> None:
         kwargs.pop("max_orders", None)
         kwargs.pop("enable_rebalance", None)
         kwargs.pop("base_asset_target_percentage", None)
@@ -31,7 +40,14 @@ class _MakerTakerHedgeMixin:
         self._hedge_poll_interval = 0.5
         self._hedge_flat_tolerance = 1e-8
 
-        super().__init__(*args, **kwargs)
+        # (新) 将智能参数传递给父类
+        super().__init__(
+            *args,
+            stale_threshold_percent=stale_threshold_percent,
+            volatility_config=volatility_config,
+            depth_weights=depth_weights,
+            **kwargs
+        )
 
         self.max_orders = 1
 
@@ -47,7 +63,8 @@ class _MakerTakerHedgeMixin:
         """僅在買一/賣一位置掛出Post-Only訂單。"""
 
         self.check_ws_connection()
-        self.cancel_existing_orders()
+        # (新) 调用父类的 *强制* 取消方法，而非智能管理方法
+        super().cancel_existing_orders()
 
         bid_price, ask_price = self.get_market_depth()
         if bid_price is None or ask_price is None:
@@ -107,8 +124,17 @@ class _MakerTakerHedgeMixin:
                 self.active_sell_orders.append(result)
                 self.orders_placed += 1
 
+    # (新) 覆盖 cancel_existing_orders
+    def cancel_existing_orders(self) -> None:
+        """
+        覆盖 MarketMaker 的 cancel_existing_orders。
+        在对冲策略中，我们总是希望在 place_limit_orders 开始时强制取消。
+        """
+        # 调用父类的同名方法，即原始的、非智能的取消逻辑
+        super().cancel_existing_orders()
+
     def _determine_order_sizes(self, buy_price: float, ask_price: float) -> Tuple[Optional[float], Optional[float]]:
-        """根據餘額決定單筆買/賣單量。"""
+        """根据餘額決定單筆買/賣單量。"""
 
         if self.order_quantity is not None:
             quantity = max(
@@ -370,8 +396,10 @@ class _SpotMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, MarketMaker):
             base_spread_percentage: float = 0.0,
             order_quantity: Optional[float] = None,
             ws_proxy: Optional[str] = None,
-            # exchange: str = "backpack", # Removed
-            # exchange_config: Optional[Dict[str, Any]] = None, # Removed
+            # (新) 接收智能策略参数
+            stale_threshold_percent: float = 0.5,
+            volatility_config: Optional[Dict[str, float]] = None,
+            depth_weights: Optional[List[float]] = None,
             **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -381,9 +409,11 @@ class _SpotMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, MarketMaker):
             base_spread_percentage=base_spread_percentage,
             order_quantity=order_quantity,
             ws_proxy=ws_proxy,
-            # exchange=exchange, # Removed
-            # exchange_config=exchange_config, # Removed
             hedge_label="現貨僅掛買一/賣一",
+            # (新) 传递智能策略参数
+            stale_threshold_percent=stale_threshold_percent,
+            volatility_config=volatility_config,
+            depth_weights=depth_weights,
             **kwargs,
         )
 
@@ -405,8 +435,10 @@ class _PerpMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, PerpetualMarketMaker):
             stop_loss: Optional[float] = None,
             take_profit: Optional[float] = None,
             ws_proxy: Optional[str] = None,
-            # exchange: str = "backpack", # Removed
-            # exchange_config: Optional[Dict[str, Any]] = None, # Removed
+            # (新) 接收智能策略参数
+            stale_threshold_percent: float = 0.5,
+            volatility_config: Optional[Dict[str, float]] = None,
+            depth_weights: Optional[List[float]] = None,
             **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -422,9 +454,11 @@ class _PerpMakerTakerHedgeStrategy(_MakerTakerHedgeMixin, PerpetualMarketMaker):
             stop_loss=stop_loss,
             take_profit=take_profit,
             ws_proxy=ws_proxy,
-            # exchange=exchange, # Removed
-            # exchange_config=exchange_config, # Removed
             hedge_label="永續合約僅掛買一/賣一",
+            # (新) 传递智能策略参数
+            stale_threshold_percent=stale_threshold_percent,
+            volatility_config=volatility_config,
+            depth_weights=depth_weights,
             **kwargs,
         )
 
