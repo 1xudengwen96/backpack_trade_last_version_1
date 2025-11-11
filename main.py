@@ -26,10 +26,13 @@ from cryptography.exceptions import InvalidSignature
 #
 PUBLIC_KEY_PEM = """
 -----BEGIN PUBLIC KEY-----
-MIIC... (这里应该是你自己的公钥内容)
-...
-...
-...
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhkneq3GL9CtRLbpc5IE+
+G8s1PDNSlKokgiQXEpsMI9+qg/YHc+XnSFUm4XOhYd6Hma8ki9m/OHQNmNApvWVg
+B1qRqaeifds0wPsYeQ96BxrEiKQhtDD1VizjQ4YVw2HZwbqfuPhO73AbCUHQQFRv
+D4SBcwUAjgYHAZkbxHr41yOnxDP6qD285gynDm806fr1RuUzU1Ai5zvhSoIFqSLW
+ZNbUpP0GW6lAGNqiyFa244dWSMsEUJrfymhzo/4+Jaal3QFfb5wMAyQ91UD8iIac
+c0VqZHmyM+X6/IjTIcL0zbhK74t0zxh8c2ZYOMiTkK5sjDD/733q6uPXPxeP5LG4
+yQIDAQAB
 -----END PUBLIC KEY-----
 """
 
